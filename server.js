@@ -40,11 +40,12 @@ app.use(cors({
       'http://localhost:3000',
       'http://127.0.0.1:3000',
       'http://localhost:3001',
-      'http://127.0.0.1:3001'
+      'http://127.0.0.1:3001',
+      'https://hccc-frontend1.vercel.app'
     ];
     
     if (process.env.NODE_ENV === 'production') {
-      allowedOrigins.push('https://your-frontend-domain.com'); // Replace with your actual domain
+      allowedOrigins.push('https://hccc-frontend1.vercel.app'); // Replace with your actual domain
     }
     
     if (allowedOrigins.indexOf(origin) !== -1) {
