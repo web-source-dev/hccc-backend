@@ -103,12 +103,10 @@ router.post('/', adminAuth, [
   body('locations.*.name')
     .notEmpty()
     .withMessage('Location name is required'),
-  body('locations.*.price')
-    .isFloat({ min: 0 })
-    .withMessage('Location price must be a positive number'),
-  body('locations.*.stock')
-    .isInt({ min: 0 })
-    .withMessage('Location stock must be a non-negative integer'),
+  body('locations.*.available')
+    .optional()
+    .isBoolean()
+    .withMessage('Location available must be a boolean'),
   body('tokenPackages')
     .isArray({ min: 1 })
     .withMessage('At least one token package is required'),
@@ -218,6 +216,14 @@ router.put('/:id', adminAuth, [
     .optional()
     .isArray({ min: 1 })
     .withMessage('At least one location is required'),
+  body('locations.*.name')
+    .optional()
+    .notEmpty()
+    .withMessage('Location name is required'),
+  body('locations.*.available')
+    .optional()
+    .isBoolean()
+    .withMessage('Location available must be a boolean'),
   body('tokenPackages')
     .optional()
     .isArray({ min: 1 })
