@@ -8,6 +8,7 @@ require('dotenv').config();
 const authRoutes = require('./routes/auth');
 const gamesRoutes = require('./routes/games');
 const paymentsRoutes = require('./routes/payments');
+const eventsRoutes = require('./routes/events');
 const Payment = require('./models/Payment');
 
 const app = express();
@@ -71,21 +72,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// Additional CORS headers for all responses
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
-  }
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  next();
-});
-
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/games', gamesRoutes);
+app.use('/api/events', eventsRoutes);
 
 // Special handling for Stripe webhooks (raw body)
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
