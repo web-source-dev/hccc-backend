@@ -37,7 +37,9 @@ const allowedOrigins = [
   'http://127.0.0.1:3000',
   'http://localhost:3001',
   'http://127.0.0.1:3001',
-  'https://hccc-frontend1.vercel.app'
+  'https://hccc-frontend1.vercel.app',
+  'https://www.hccc.online',
+  'https://hccc.online'
 ];
 
 app.use(cors({
