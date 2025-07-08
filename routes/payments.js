@@ -5,6 +5,7 @@ const Payment = require('../models/Payment');
 const Game = require('../models/Game');
 const TokenBalance = require('../models/TokenBalance');
 const { auth, adminAuth } = require('../middleware/auth');
+const { sendEmail } = require('../utils/email');
 
 const router = express.Router();
 
@@ -62,7 +63,7 @@ router.post('/create-payment-intent', auth, [
     }
 
     // Check if location is available
-    const locationData = game.locations.find(loc => 
+    const locationData = game.locations.find(loc =>
       loc.name.toLowerCase().replace(/\s+/g, '-') === location.toLowerCase().replace(/\s+/g, '-')
     );
     if (!locationData || !locationData.available) {
@@ -87,7 +88,7 @@ router.post('/create-payment-intent', auth, [
       // Check if the existing payment intent is still valid
       try {
         const paymentIntent = await stripe.paymentIntents.retrieve(existingPayment.stripePaymentIntentId);
-        
+
         if (paymentIntent.status === 'requires_payment_method') {
           // Return existing payment intent if it's still valid
           return res.json({
@@ -189,7 +190,7 @@ router.post('/confirm-payment', auth, [
 
     // Retrieve payment intent from Stripe
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-    
+
     if (!paymentIntent) {
       return res.status(404).json({
         success: false,
@@ -198,9 +199,9 @@ router.post('/confirm-payment', auth, [
     }
 
     // Find payment record
-    const payment = await Payment.findOne({ 
+    const payment = await Payment.findOne({
       stripePaymentIntentId: paymentIntentId,
-      user: req.user.id 
+      user: req.user.id
     });
 
     if (!payment) {
@@ -261,9 +262,87 @@ router.post('/confirm-payment', auth, [
 
           tokenBalance.tokens += payment.tokenPackage.tokens;
           await tokenBalance.save();
+
+          // --- EMAIL LOGIC ---
+          // Determine admin email by location
+          let adminEmail = null;
+          if (payment.location.toLowerCase().includes('cedar')) {
+            adminEmail = process.env.ADMIN_EMAIL_CEDAR_PARK;
+          } else if (payment.location.toLowerCase().includes('liberty')) {
+            adminEmail = process.env.ADMIN_EMAIL_LIBERTY_HILL;
+          }
+          // Compose enhanced email content with branding
+          const logoUrl = 'E:\HCCC Games\hccc-frontend\public\placeholder-logo.svg'; // Update to your real logo URL if available
+          const brandColor = '#1e293b';
+          const accentColor = '#38a169';
+          const adminSubject = `🎮 Token Purchase Notification - ${payment.location}`;
+          const adminHtml = `
+            <div style="font-family: Arial, sans-serif; background: #f9f9f9; padding: 24px; border-radius: 8px; border: 1px solid #e2e8f0; max-width: 520px; margin: auto;">
+              <div style="text-align: center; margin-bottom: 18px;">
+                <img src="https://www.hccc.online/image.gif" alt="HCCC Games Logo" style="height: 48px; margin-bottom: 8px;" />
+                <h2 style="color: ${brandColor}; margin: 0;">HCCC Games - Token Purchase Alert</h2>
+              </div>
+              <p><b>User:</b> ${payment.metadata.userName} (<a href="mailto:${payment.metadata.userEmail}">${payment.metadata.userEmail}</a>)</p>
+              <p><b>Game:</b> ${payment.metadata.gameName}</p>
+              <p><b>Tokens Purchased:</b> <span style="color: #3182ce; font-weight: bold;">${payment.tokenPackage.tokens}</span></p>
+              <p><b>Amount:</b> <span style="color: ${accentColor};">$${payment.amount}</span></p>
+              <p><b>Location:</b> ${payment.location}</p>
+              <p><b>Status:</b> <span style="color: ${accentColor};">${payment.status}</span></p>
+              <hr style="margin: 24px 0;"/>
+              <p style="font-size: 13px; color: #718096;">This is an automated notification for admins of HCCC Gameroom.</p>
+              <div style="text-align: center; margin-top: 24px;">
+                <a href="https://www.hccc.online" style="color: ${brandColor}; text-decoration: none; font-weight: bold;">Visit HCCC Games</a>
+              </div>
+            </div>
+          `;
+          const adminText = `HCCC Games - Token Purchase Alert\n\nUser: ${payment.metadata.userName} (${payment.metadata.userEmail})\nGame: ${payment.metadata.gameName}\nTokens: ${payment.tokenPackage.tokens}\nAmount: $${payment.amount}\nLocation: ${payment.location}\nStatus: ${payment.status}\n\nVisit HCCC Games: https://www.hccc.online`;
+
+          // Send to admin
+          if (adminEmail) {
+            await sendEmail({
+              to: adminEmail,
+              subject: adminSubject,
+              html: adminHtml,
+              text: adminText
+            });
+          }
+
+          // Enhanced user email with branding
+          const userSubject = '🎉 Your HCCC Games Token Purchase Confirmation';
+          const userHtml = `
+            <div style="font-family: Arial, sans-serif; background: #f9f9f9; padding: 24px; border-radius: 8px; border: 1px solid #e2e8f0; max-width: 520px; margin: auto;">
+              <div style="text-align: center; margin-bottom: 18px;">
+                <img src="https://www.hccc.online/image.gif" alt="HCCC Games Logo" style="height: 48px; margin-bottom: 8px;" />
+                <h2 style="color: ${brandColor}; margin: 0;">Thank you for your purchase!</h2>
+              </div>
+              <p>Hi <b>${payment.metadata.userName}</b>,</p>
+              <p>We're excited to confirm your token purchase for <b>${payment.metadata.gameName}</b> at <b>${payment.location}</b>.</p>
+              <ul style="background: #fff; padding: 16px; border-radius: 6px; list-style: none;">
+                <li><b>Tokens:</b> <span style="color: #3182ce; font-weight: bold;">${payment.tokenPackage.tokens}</span></li>
+                <li><b>Amount:</b> <span style="color: ${accentColor};">$${payment.amount}</span></li>
+                <li><b>Location:</b> ${payment.location}</li>
+              </ul>
+              <p style="margin-top: 18px;">If you have any questions, just reply to this email. Enjoy your game!</p>
+              <hr style="margin: 24px 0;"/>
+              <p style="font-size: 13px; color: #718096;">This is an automated confirmation from HCCC Gameroom.</p>
+              <div style="text-align: center; margin-top: 24px;">
+                <a href="https://www.hccc.online" style="color: ${brandColor}; text-decoration: none; font-weight: bold;">Visit HCCC Games</a>
+              </div>
+            </div>
+          `;
+          const userText = `Thank you for your purchase!\n\nGame: ${payment.metadata.gameName}\nTokens: ${payment.tokenPackage.tokens}\nAmount: $${payment.amount}\nLocation: ${payment.location}\n\nVisit HCCC Games: https://www.hccc.online`;
+
+          // Send to user
+          await sendEmail({
+            to: payment.metadata.userEmail,
+            subject: userSubject,
+            html: userHtml,
+            text: userText
+          });
+          // --- END EMAIL LOGIC ---
         } catch (error) {
-          console.error('Error updating token balance:', error);
-          // Don't fail the payment confirmation if token balance update fails
+          console.error('Error updating token balance or sending email:', error);
+          // Don't fail the payment confirmation if token balance update or email fails
         }
       }
     }
@@ -314,9 +393,9 @@ router.get('/user-payments', auth, async (req, res) => {
 // @access  Private
 router.get('/:id', auth, async (req, res) => {
   try {
-    const payment = await Payment.findOne({ 
+    const payment = await Payment.findOne({
       _id: req.params.id,
-      user: req.user.id 
+      user: req.user.id
     }).populate('game', 'name image');
 
     if (!payment) {
@@ -346,19 +425,19 @@ router.get('/:id', auth, async (req, res) => {
 router.get('/admin/all', adminAuth, async (req, res) => {
   try {
     const { limit = 50, page = 1, status } = req.query;
-    
+
     const filter = {};
     if (status) filter.status = status;
-    
+
     const payments = await Payment.find(filter)
       .populate('user', 'username email')
       .populate('game', 'name image')
       .sort({ createdAt: -1 })
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit));
-    
+
     const total = await Payment.countDocuments(filter);
-    
+
     res.json({
       success: true,
       data: {
@@ -390,21 +469,21 @@ router.get('/admin/stats', adminAuth, async (req, res) => {
     const successfulPayments = await Payment.countDocuments({ status: 'succeeded' });
     const pendingPayments = await Payment.countDocuments({ status: 'pending' });
     const failedPayments = await Payment.countDocuments({ status: 'failed' });
-    
+
     // Calculate total revenue
     const revenueResult = await Payment.aggregate([
       { $match: { status: 'succeeded' } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     const totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;
-    
+
     // Get payments in last 30 days
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const recentPayments = await Payment.countDocuments({ 
+    const recentPayments = await Payment.countDocuments({
       createdAt: { $gte: thirtyDaysAgo },
       status: 'succeeded'
     });
-    
+
     res.json({
       success: true,
       data: {
@@ -444,10 +523,10 @@ router.post('/webhook', async (req, res) => {
     switch (event.type) {
       case 'payment_intent.succeeded':
         const paymentIntent = event.data.object;
-        
+
         // Find and update payment record
-        const payment = await Payment.findOne({ 
-          stripePaymentIntentId: paymentIntent.id 
+        const payment = await Payment.findOne({
+          stripePaymentIntentId: paymentIntent.id
         });
 
         if (payment && payment.status !== 'succeeded') {
@@ -483,10 +562,10 @@ router.post('/webhook', async (req, res) => {
 
       case 'payment_intent.payment_failed':
         const failedPaymentIntent = event.data.object;
-        
+
         // Find and update payment record
-        const failedPayment = await Payment.findOne({ 
-          stripePaymentIntentId: failedPaymentIntent.id 
+        const failedPayment = await Payment.findOne({
+          stripePaymentIntentId: failedPaymentIntent.id
         });
 
         if (failedPayment && failedPayment.status !== 'failed') {
