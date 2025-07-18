@@ -25,7 +25,7 @@ const migrateTokenBalances = async () => {
     
     // Get all successful payments
     const successfulPayments = await Payment.find({ status: 'succeeded' })
-      .populate('user', 'username')
+      .populate('user', 'firstname lastname')
       .populate('game', 'name');
     
     console.log(`📊 Found ${successfulPayments.length} successful payments to process`);
@@ -119,7 +119,7 @@ const migrateTokenBalances = async () => {
     
     // Show some sample data
     const sampleBalances = await TokenBalance.find()
-      .populate('user', 'username')
+      .populate('user', 'firstname lastname')
       .populate('game', 'name')
       .limit(5)
       .sort({ tokens: -1 });
@@ -127,7 +127,7 @@ const migrateTokenBalances = async () => {
     if (sampleBalances.length > 0) {
       console.log('\n📋 Sample Token Balances:');
       sampleBalances.forEach(balance => {
-        console.log(`  • ${balance.user.username} - ${balance.game.name} (${balance.location}): ${balance.tokens} tokens`);
+        console.log(`  • ${balance.user.firstname} ${balance.user.lastname} - ${balance.game.name} (${balance.location}): ${balance.tokens} tokens`);
       });
     }
     

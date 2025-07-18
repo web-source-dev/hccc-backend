@@ -154,11 +154,27 @@ const startServer = async () => {
     }
   }, 30 * 60 * 1000); // 30 minutes
 
-  // Run initial cleanup
+  // Schedule processing of delayed token additions every 5 minutes
+  setInterval(async () => {
+    try {
+      const processedCount = await Payment.processScheduledTokens();
+      if (processedCount > 0) {
+        console.log(`Scheduled token processing: ${processedCount} payments processed`);
+      }
+    } catch (error) {
+      console.error('Scheduled token processing failed:', error);
+    }
+  }, 5 * 60 * 1000); // 5 minutes
+
+  // Run initial cleanup and token processing
   try {
     await Payment.cleanupExpiredPayments();
+    const initialProcessedCount = await Payment.processScheduledTokens();
+    if (initialProcessedCount > 0) {
+      console.log(`Initial token processing: ${initialProcessedCount} payments processed`);
+    }
   } catch (error) {
-    console.error('Initial cleanup failed:', error);
+    console.error('Initial cleanup/token processing failed:', error);
   }
 };
 

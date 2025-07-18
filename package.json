@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "migrate-tokens": "node scripts/migrate-token-balances.js"
+    "migrate-tokens": "node scripts/migrate-token-balances.js",
+    "process-scheduled-tokens": "node scripts/process-scheduled-tokens.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

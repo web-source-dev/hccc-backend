@@ -18,8 +18,8 @@ router.get('/', async (req, res) => {
     if (featured !== undefined) filter.featured = featured === 'true';
     
     const games = await Game.find(filter)
-      .populate('createdBy', 'username')
-      .sort({ createdAt: -1 })
+      .populate('createdBy', 'firstname lastname')
+      .sort({ featured: -1, createdAt: -1 })
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit));
     
@@ -52,7 +52,7 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const game = await Game.findById(req.params.id)
-      .populate('createdBy', 'username');
+      .populate('createdBy', 'firstname lastname');
     
     if (!game) {
       return res.status(404).json({
@@ -168,7 +168,7 @@ router.post('/', adminAuth, [
     await game.save();
 
     // Populate creator info
-    await game.populate('createdBy', 'username');
+    await game.populate('createdBy', 'firstname lastname');
 
     res.status(201).json({
       success: true,
@@ -268,7 +268,7 @@ router.put('/:id', adminAuth, [
       req.params.id,
       req.body,
       { new: true, runValidators: true }
-    ).populate('createdBy', 'username');
+    ).populate('createdBy', 'firstname lastname');
 
     res.json({
       success: true,

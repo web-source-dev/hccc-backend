@@ -113,6 +113,33 @@ router.post('/create-payment-intent', auth, [
     // Calculate amount in cents
     const amount = Math.round(tokenPackage.price * 100);
 
+    // Check if payment is made during restricted hours
+    const now = new Date();
+    const currentHour = now.getHours();
+    const currentMinute = now.getMinutes();
+    const currentTime = currentHour * 60 + currentMinute;
+    
+    let timeRestriction = null;
+    const normalizedLocation = locationData.name.toLowerCase().replace(/[-\s]/g, '');
+    
+    if (normalizedLocation.includes('libertyhill') || normalizedLocation.includes('liberty')) {
+      if (currentTime >= 1380) { // After 11 PM
+        timeRestriction = {
+          type: 'liberty_hill',
+          message: 'Tokens purchased after 11:00 PM will not be added until the next business day.',
+          cutoffTime: '11:00 PM'
+        };
+      }
+    } else if (normalizedLocation.includes('cedarpark') || normalizedLocation.includes('cedar')) {
+      if (currentTime >= 180) { // After 3 AM
+        timeRestriction = {
+          type: 'cedar_park',
+          message: 'Tokens purchased after 3:00 AM will not be added until the next business day.',
+          cutoffTime: '3:00 AM'
+        };
+      }
+    }
+
     // Create payment intent with Stripe
     const paymentIntent = await stripe.paymentIntents.create({
       amount,
@@ -120,12 +147,14 @@ router.post('/create-payment-intent', auth, [
       metadata: {
         gameId: game._id.toString(),
         gameName: game.name,
-        userId: req.user.id,
-        userName: req.user.username,
+        userFirstname: req.user.firstname,
+        userLastname: req.user.lastname,
         userEmail: req.user.email,
+        packageIndex: packageIndex.toString(),
+        location,
         tokens: tokenPackage.tokens.toString(),
-        location: locationData.name,
-        packageIndex: packageIndex.toString()
+        price: tokenPackage.price.toString(),
+        timeRestriction: timeRestriction ? JSON.stringify(timeRestriction) : ''
       }
     });
 
@@ -143,8 +172,10 @@ router.post('/create-payment-intent', auth, [
       amount: tokenPackage.price,
       metadata: {
         gameName: game.name,
-        userName: req.user.username,
-        userEmail: req.user.email
+        userFirstname: req.user.firstname,
+        userLastname: req.user.lastname,
+        userEmail: req.user.email,
+        timeRestriction: timeRestriction ? JSON.stringify(timeRestriction) : ''
       }
     });
 
@@ -242,107 +273,55 @@ router.post('/confirm-payment', auth, [
 
       await payment.save();
 
-      // If payment succeeded, update token balance
+      // If payment succeeded, check time restrictions before adding tokens
       if (status === 'succeeded') {
         try {
-          let tokenBalance = await TokenBalance.findOne({
-            user: payment.user,
-            game: payment.game,
-            location: payment.location
-          });
-
-          if (!tokenBalance) {
-            tokenBalance = new TokenBalance({
-              user: payment.user,
-              game: payment.game,
-              location: payment.location,
-              tokens: 0
-            });
+          // Check if payment was made during restricted hours
+          const now = new Date();
+          const currentHour = now.getHours();
+          const currentMinute = now.getMinutes();
+          const currentTime = currentHour * 60 + currentMinute;
+          
+          const normalizedLocation = payment.location.toLowerCase().replace(/[-\s]/g, '');
+          let shouldDelayTokens = false;
+          let scheduledTime = null;
+          
+          if (normalizedLocation.includes('cedarpark') || normalizedLocation.includes('cedar')) {
+            if (currentTime >= 180) { // After 3 AM
+              shouldDelayTokens = true;
+              // Schedule for next day at 11 AM
+              scheduledTime = new Date(now);
+              scheduledTime.setDate(scheduledTime.getDate() + 1);
+              scheduledTime.setHours(11, 0, 0, 0);
+            }
+          } else if (normalizedLocation.includes('libertyhill') || normalizedLocation.includes('liberty')) {
+            if (currentTime >= 1380) { // After 11 PM
+              shouldDelayTokens = true;
+              // Schedule for next day at 10 AM
+              scheduledTime = new Date(now);
+              scheduledTime.setDate(scheduledTime.getDate() + 1);
+              scheduledTime.setHours(10, 0, 0, 0);
+            }
           }
 
-          tokenBalance.tokens += payment.tokenPackage.tokens;
-          await tokenBalance.save();
-
-          // --- EMAIL LOGIC ---
-          // Determine admin email by location
-          let adminEmail = null;
-          if (payment.location.toLowerCase().includes('cedar')) {
-            adminEmail = process.env.ADMIN_EMAIL_CEDAR_PARK;
-          } else if (payment.location.toLowerCase().includes('liberty')) {
-            adminEmail = process.env.ADMIN_EMAIL_LIBERTY_HILL;
-          }
-          // Compose enhanced email content with branding
-          const logoUrl = 'E:\HCCC Games\hccc-frontend\public\placeholder-logo.svg'; // Update to your real logo URL if available
-          const brandColor = '#1e293b';
-          const accentColor = '#38a169';
-          const adminSubject = `🎮 Token Purchase Notification - ${payment.location}`;
-          const adminHtml = `
-            <div style="font-family: Arial, sans-serif; background: #f9f9f9; padding: 24px; border-radius: 8px; border: 1px solid #e2e8f0; max-width: 520px; margin: auto;">
-              <div style="text-align: center; margin-bottom: 18px;">
-                <img src="https://www.hccc.online/image.gif" alt="HCCC Games Logo" style="height: 48px; margin-bottom: 8px;" />
-                <h2 style="color: ${brandColor}; margin: 0;">HCCC Games - Token Purchase Alert</h2>
-              </div>
-              <p><b>User:</b> ${payment.metadata.userName} (<a href="mailto:${payment.metadata.userEmail}">${payment.metadata.userEmail}</a>)</p>
-              <p><b>Game:</b> ${payment.metadata.gameName}</p>
-              <p><b>Tokens Purchased:</b> <span style="color: #3182ce; font-weight: bold;">${payment.tokenPackage.tokens}</span></p>
-              <p><b>Amount:</b> <span style="color: ${accentColor};">$${payment.amount}</span></p>
-              <p><b>Location:</b> ${payment.location}</p>
-              <p><b>Status:</b> <span style="color: ${accentColor};">${payment.status}</span></p>
-              <hr style="margin: 24px 0;"/>
-              <p style="font-size: 13px; color: #718096;">This is an automated notification for admins of HCCC Gameroom.</p>
-              <div style="text-align: center; margin-top: 24px;">
-                <a href="https://www.hccc.online" style="color: ${brandColor}; text-decoration: none; font-weight: bold;">Visit HCCC Games</a>
-              </div>
-            </div>
-          `;
-          const adminText = `HCCC Games - Token Purchase Alert\n\nUser: ${payment.metadata.userName} (${payment.metadata.userEmail})\nGame: ${payment.metadata.gameName}\nTokens: ${payment.tokenPackage.tokens}\nAmount: $${payment.amount}\nLocation: ${payment.location}\nStatus: ${payment.status}\n\nVisit HCCC Games: https://www.hccc.online`;
-
-          // Send to admin
-          if (adminEmail) {
-            await sendEmail({
-              to: adminEmail,
-              subject: adminSubject,
-              html: adminHtml,
-              text: adminText
-            });
+          if (shouldDelayTokens && scheduledTime) {
+            // Mark payment for delayed token addition
+            payment.tokensScheduledFor = scheduledTime;
+            payment.tokensAdded = false;
+            await payment.save();
+            
+            console.log(`Tokens scheduled for ${scheduledTime.toISOString()} for payment ${payment._id}`);
+          } else {
+            // Add tokens immediately
+            await addTokensToBalance(payment);
           }
 
-          // Enhanced user email with branding
-          const userSubject = '🎉 Your HCCC Games Token Purchase Confirmation';
-          const userHtml = `
-            <div style="font-family: Arial, sans-serif; background: #f9f9f9; padding: 24px; border-radius: 8px; border: 1px solid #e2e8f0; max-width: 520px; margin: auto;">
-              <div style="text-align: center; margin-bottom: 18px;">
-                <img src="https://www.hccc.online/image.gif" alt="HCCC Games Logo" style="height: 48px; margin-bottom: 8px;" />
-                <h2 style="color: ${brandColor}; margin: 0;">Thank you for your purchase!</h2>
-              </div>
-              <p>Hi <b>${payment.metadata.userName}</b>,</p>
-              <p>We're excited to confirm your token purchase for <b>${payment.metadata.gameName}</b> at <b>${payment.location}</b>.</p>
-              <ul style="background: #fff; padding: 16px; border-radius: 6px; list-style: none;">
-                <li><b>Tokens:</b> <span style="color: #3182ce; font-weight: bold;">${payment.tokenPackage.tokens}</span></li>
-                <li><b>Amount:</b> <span style="color: ${accentColor};">$${payment.amount}</span></li>
-                <li><b>Location:</b> ${payment.location}</li>
-              </ul>
-              <p style="margin-top: 18px;">If you have any questions, just reply to this email. Enjoy your game!</p>
-              <hr style="margin: 24px 0;"/>
-              <p style="font-size: 13px; color: #718096;">This is an automated confirmation from HCCC Gameroom.</p>
-              <div style="text-align: center; margin-top: 24px;">
-                <a href="https://www.hccc.online" style="color: ${brandColor}; text-decoration: none; font-weight: bold;">Visit HCCC Games</a>
-              </div>
-            </div>
-          `;
-          const userText = `Thank you for your purchase!\n\nGame: ${payment.metadata.gameName}\nTokens: ${payment.tokenPackage.tokens}\nAmount: $${payment.amount}\nLocation: ${payment.location}\n\nVisit HCCC Games: https://www.hccc.online`;
-
-          // Send to user
-          await sendEmail({
-            to: payment.metadata.userEmail,
-            subject: userSubject,
-            html: userHtml,
-            text: userText
-          });
-          // --- END EMAIL LOGIC ---
+          // Send email notifications
+          await sendEmailNotifications(payment, shouldDelayTokens, scheduledTime);
+          
         } catch (error) {
-          console.error('Error updating token balance or sending email:', error);
-          // Don't fail the payment confirmation if token balance update or email fails
+          console.error('Error processing payment:', error);
+          // Don't fail the payment confirmation if token processing fails
         }
       }
     }
@@ -363,6 +342,122 @@ router.post('/confirm-payment', auth, [
     });
   }
 });
+
+// Helper function to add tokens to balance
+async function addTokensToBalance(payment) {
+  let tokenBalance = await TokenBalance.findOne({
+    user: payment.user,
+    game: payment.game,
+    location: payment.location
+  });
+
+  if (!tokenBalance) {
+    tokenBalance = new TokenBalance({
+      user: payment.user,
+      game: payment.game,
+      location: payment.location,
+      tokens: 0
+    });
+  }
+
+  tokenBalance.tokens += payment.tokenPackage.tokens;
+  await tokenBalance.save();
+  
+  // Mark payment as tokens added
+  payment.tokensAdded = true;
+  await payment.save();
+  
+  console.log(`Added ${payment.tokenPackage.tokens} tokens for payment ${payment._id}`);
+}
+
+// Helper function to send email notifications
+async function sendEmailNotifications(payment, delayed, scheduledTime) {
+  try {
+    // Determine admin email by location
+    let adminEmail = null;
+    if (payment.location.toLowerCase().includes('cedar')) {
+      adminEmail = process.env.ADMIN_EMAIL_CEDAR_PARK;
+    } else if (payment.location.toLowerCase().includes('liberty')) {
+      adminEmail = process.env.ADMIN_EMAIL_LIBERTY_HILL;
+    }
+
+    // Compose enhanced email content with branding
+    const logoUrl = 'https://www.hccc.online/image.gif';
+    const brandColor = '#1e293b';
+    const accentColor = '#38a169';
+    
+    const adminSubject = `🎮 Token Purchase Notification - ${payment.location}`;
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; background: #f9f9f9; padding: 24px; border-radius: 8px; border: 1px solid #e2e8f0; max-width: 520px; margin: auto;">
+        <div style="text-align: center; margin-bottom: 18px;">
+          <img src="${logoUrl}" alt="HCCC Games Logo" style="height: 48px; margin-bottom: 8px;" />
+          <h2 style="color: ${brandColor}; margin: 0;">HCCC Games - Token Purchase Alert</h2>
+        </div>
+        <p><b>User:</b> ${payment.metadata.userFirstname} ${payment.metadata.userLastname} (<a href="mailto:${payment.metadata.userEmail}">${payment.metadata.userEmail}</a>)</p>
+        <p><b>Game:</b> ${payment.metadata.gameName}</p>
+        <p><b>Tokens Purchased:</b> <span style="color: #3182ce; font-weight: bold;">${payment.tokenPackage.tokens}</span></p>
+        <p><b>Amount:</b> <span style="color: ${accentColor};">$${payment.amount}</span></p>
+        <p><b>Location:</b> ${payment.location}</p>
+        <p><b>Status:</b> <span style="color: ${accentColor};">${payment.status}</span></p>
+        ${delayed ? `<p><b>Token Addition:</b> <span style="color: #ff6b35; font-weight: bold;">Scheduled for ${scheduledTime.toLocaleString()}</span></p>` : '<p><b>Token Addition:</b> <span style="color: #38a169; font-weight: bold;">Immediate</span></p>'}
+        <hr style="margin: 24px 0;"/>
+        <p style="font-size: 13px; color: #718096;">This is an automated notification for admins of HCCC Gameroom.</p>
+        <div style="text-align: center; margin-top: 24px;">
+          <a href="https://www.hccc.online" style="color: ${brandColor}; text-decoration: none; font-weight: bold;">Visit HCCC Games</a>
+        </div>
+      </div>
+    `;
+    
+    const adminText = `HCCC Games - Token Purchase Alert\n\nUser: ${payment.metadata.userFirstname} ${payment.metadata.userLastname} (${payment.metadata.userEmail})\nGame: ${payment.metadata.gameName}\nTokens: ${payment.tokenPackage.tokens}\nAmount: $${payment.amount}\nLocation: ${payment.location}\nStatus: ${payment.status}\nToken Addition: ${delayed ? `Scheduled for ${scheduledTime.toLocaleString()}` : 'Immediate'}\n\nPayment ID: ${payment._id}\nStripe ID: ${payment.stripePaymentIntentId}`;
+
+    // Send to admin
+    if (adminEmail) {
+      await sendEmail({
+        to: adminEmail,
+        subject: adminSubject,
+        html: adminHtml,
+        text: adminText
+      });
+    }
+
+    // Enhanced user email with branding
+    const userSubject = '🎉 Your HCCC Games Token Purchase Confirmation';
+    const userHtml = `
+      <div style="font-family: Arial, sans-serif; background: #f9f9f9; padding: 24px; border-radius: 8px; border: 1px solid #e2e8f0; max-width: 520px; margin: auto;">
+        <div style="text-align: center; margin-bottom: 18px;">
+          <img src="${logoUrl}" alt="HCCC Games Logo" style="height: 48px; margin-bottom: 8px;" />
+          <h2 style="color: ${brandColor}; margin: 0;">Thank you for your purchase!</h2>
+        </div>
+        <p>Hi <b>${payment.metadata.userFirstname} ${payment.metadata.userLastname}</b>,</p>
+        <p>We're excited to confirm your token purchase for <b>${payment.metadata.gameName}</b> at <b>${payment.location}</b>.</p>
+        <ul style="background: #fff; padding: 16px; border-radius: 6px; list-style: none;">
+          <li><b>Tokens:</b> <span style="color: #3182ce; font-weight: bold;">${payment.tokenPackage.tokens}</span></li>
+          <li><b>Amount:</b> <span style="color: ${accentColor};">$${payment.amount}</span></li>
+          <li><b>Location:</b> ${payment.location}</li>
+        </ul>
+        ${delayed ? `<div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 8px; margin: 20px 0;"><p style="color: #856404; font-weight: bold; margin: 0;">⏰ Token Availability:</p><p style="color: #856404; margin: 5px 0 0 0;">Your tokens will be automatically added to your account on ${scheduledTime.toLocaleDateString()} at ${scheduledTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}.</p></div>` : '<p style="margin-top: 18px;">Your tokens have been added to your account and are ready to use!</p>'}
+        <p>If you have any questions, just reply to this email. Enjoy your game!</p>
+        <hr style="margin: 24px 0;"/>
+        <p style="font-size: 13px; color: #718096;">This is an automated confirmation from HCCC Gameroom.</p>
+        <div style="text-align: center; margin-top: 24px;">
+          <a href="https://www.hccc.online" style="color: ${brandColor}; text-decoration: none; font-weight: bold;">Visit HCCC Games</a>
+        </div>
+      </div>
+    `;
+    
+    const userText = `Thank you for your purchase!\n\nHi ${payment.metadata.userFirstname} ${payment.metadata.userLastname},\n\nThank you for purchasing ${payment.tokenPackage.tokens} tokens for ${payment.metadata.gameName} at ${payment.location}.\n\nPurchase Details:\n- Game: ${payment.metadata.gameName}\n- Tokens: ${payment.tokenPackage.tokens}\n- Amount: $${payment.amount}\n- Location: ${payment.location}\n- Date: ${new Date(payment.createdAt).toLocaleDateString()}\n\n${delayed ? `Token Availability: Your tokens will be automatically added to your account on ${scheduledTime.toLocaleDateString()} at ${scheduledTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}.` : 'Your tokens have been added to your account and are ready to use!'}\n\nIf you have any questions, please contact us.\n\nBest regards,\nHCCC Game Room Team`;
+
+    // Send to user
+    await sendEmail({
+      to: payment.metadata.userEmail,
+      subject: userSubject,
+      html: userHtml,
+      text: userText
+    });
+  } catch (error) {
+    console.error('Failed to send email notifications:', error);
+  }
+}
 
 // @route   GET /api/payments/user-payments
 // @desc    Get user's payment history
@@ -430,7 +525,7 @@ router.get('/admin/all', adminAuth, async (req, res) => {
     if (status) filter.status = status;
 
     const payments = await Payment.find(filter)
-      .populate('user', 'username email')
+      .populate('user', 'firstname lastname email')
       .populate('game', 'name image')
       .sort({ createdAt: -1 })
       .limit(parseInt(limit))

@@ -19,11 +19,16 @@ const generateToken = (userId) => {
 // @desc    Register a new user
 // @access  Public
 router.post('/signup', [
-  body('username')
-    .isLength({ min: 3, max: 30 })
-    .withMessage('Username must be between 3 and 30 characters')
-    .matches(/^[a-zA-Z0-9_]+$/)
-    .withMessage('Username can only contain letters, numbers, and underscores'),
+  body('firstname')
+    .isLength({ min: 2, max: 50 })
+    .withMessage('First name must be between 2 and 50 characters')
+    .matches(/^[a-zA-Z\s]+$/)
+    .withMessage('First name can only contain letters and spaces'),
+  body('lastname')
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Last name must be between 2 and 50 characters')
+    .matches(/^[a-zA-Z\s]+$/)
+    .withMessage('Last name can only contain letters and spaces'),
   body('email')
     .isEmail()
     .withMessage('Please enter a valid email'),
@@ -44,25 +49,22 @@ router.post('/signup', [
       });
     }
 
-    const { username, email, password } = req.body;
+    const { firstname, lastname, email, password } = req.body;
 
-    // Check if user already exists
-    const existingUser = await User.findOne({
-      $or: [{ email }, { username }]
-    });
+    // Check if user already exists by email
+    const existingUser = await User.findOne({ email });
 
     if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: existingUser.email === email 
-          ? 'Email already registered' 
-          : 'Username already taken'
+        message: 'Email already registered'
       });
     }
 
     // Create new user
     const user = new User({
-      username,
+      firstname,
+      lastname,
       email,
       password
     });
@@ -79,7 +81,8 @@ router.post('/signup', [
         user: {
           id: user._id,
           _id: user._id,
-          username: user.username,
+          firstname: user.firstname,
+          lastname: user.lastname,
           email: user.email,
           role: user.role,
           createdAt: user.createdAt,
@@ -163,7 +166,8 @@ router.post('/login', [
         user: {
           id: user._id,
           _id: user._id,
-          username: user.username,
+          firstname: user.firstname,
+          lastname: user.lastname,
           email: user.email,
           role: user.role,
           createdAt: user.createdAt,
@@ -212,7 +216,8 @@ router.get('/users', adminAuth, async (req, res) => {
     const filter = {};
     if (search) {
       filter.$or = [
-        { username: { $regex: search, $options: 'i' } },
+        { firstname: { $regex: search, $options: 'i' } },
+        { lastname: { $regex: search, $options: 'i' } },
         { email: { $regex: search, $options: 'i' } }
       ];
     }
@@ -283,7 +288,49 @@ router.get('/me/tokens', auth, async (req, res) => {
     const balances = await TokenBalance.find({ user: req.user._id })
       .populate('game', 'name')
       .sort({ game: 1, location: 1 });
-    res.json({ success: true, data: { balances } });
+
+    // Get pending token additions from scheduled payments
+    const Payment = require('../models/Payment');
+    const pendingPayments = await Payment.find({
+      user: req.user._id,
+      status: 'succeeded',
+      tokensScheduledFor: { $exists: true, $ne: null },
+      tokensAdded: false
+    }).populate('game', 'name');
+
+    // Group pending tokens by game and location
+    const pendingTokens = {};
+    pendingPayments.forEach(payment => {
+      const key = `${payment.game._id}-${payment.location}`;
+      if (!pendingTokens[key]) {
+        pendingTokens[key] = {
+          game: payment.game,
+          location: payment.location,
+          tokens: 0,
+          scheduledFor: payment.tokensScheduledFor
+        };
+      }
+      pendingTokens[key].tokens += payment.tokenPackage.tokens;
+    });
+
+    // Add pending token info to balances
+    const balancesWithPending = balances.map(balance => {
+      const key = `${balance.game._id}-${balance.location}`;
+      const pending = pendingTokens[key];
+      return {
+        ...balance.toObject(),
+        pendingTokens: pending ? pending.tokens : 0,
+        tokensScheduledFor: pending ? pending.scheduledFor : null
+      };
+    });
+
+    res.json({ 
+      success: true, 
+      data: { 
+        balances: balancesWithPending,
+        pendingTokens: Object.values(pendingTokens)
+      } 
+    });
   } catch (error) {
     console.error('Get token balances error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch token balances' });
@@ -297,7 +344,49 @@ router.get('/:userId/tokens', adminAuth, async (req, res) => {
     const balances = await TokenBalance.find({ user: userId })
       .populate('game', 'name')
       .sort({ game: 1, location: 1 });
-    res.json({ success: true, data: { balances } });
+
+    // Get pending token additions from scheduled payments
+    const Payment = require('../models/Payment');
+    const pendingPayments = await Payment.find({
+      user: userId,
+      status: 'succeeded',
+      tokensScheduledFor: { $exists: true, $ne: null },
+      tokensAdded: false
+    }).populate('game', 'name');
+
+    // Group pending tokens by game and location
+    const pendingTokens = {};
+    pendingPayments.forEach(payment => {
+      const key = `${payment.game._id}-${payment.location}`;
+      if (!pendingTokens[key]) {
+        pendingTokens[key] = {
+          game: payment.game,
+          location: payment.location,
+          tokens: 0,
+          scheduledFor: payment.tokensScheduledFor
+        };
+      }
+      pendingTokens[key].tokens += payment.tokenPackage.tokens;
+    });
+
+    // Add pending token info to balances
+    const balancesWithPending = balances.map(balance => {
+      const key = `${balance.game._id}-${balance.location}`;
+      const pending = pendingTokens[key];
+      return {
+        ...balance.toObject(),
+        pendingTokens: pending ? pending.tokens : 0,
+        tokensScheduledFor: pending ? pending.scheduledFor : null
+      };
+    });
+
+    res.json({ 
+      success: true, 
+      data: { 
+        balances: balancesWithPending,
+        pendingTokens: Object.values(pendingTokens)
+      } 
+    });
   } catch (error) {
     console.error('Get token balances error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch token balances' });
@@ -327,12 +416,18 @@ router.post('/:userId/tokens/adjust', adminAuth, async (req, res) => {
 
 // Update user (admin only)
 router.put('/:userId', adminAuth, [
-  body('username')
+  body('firstname')
     .optional()
-    .isLength({ min: 3, max: 30 })
-    .withMessage('Username must be between 3 and 30 characters')
-    .matches(/^[a-zA-Z0-9_]+$/)
-    .withMessage('Username can only contain letters, numbers, and underscores'),
+    .isLength({ min: 2, max: 50 })
+    .withMessage('First name must be between 2 and 50 characters')
+    .matches(/^[a-zA-Z\s]+$/)
+    .withMessage('First name can only contain letters and spaces'),
+  body('lastname')
+    .optional()
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Last name must be between 2 and 50 characters')
+    .matches(/^[a-zA-Z\s]+$/)
+    .withMessage('Last name can only contain letters and spaces'),
   body('email')
     .optional()
     .isEmail()
@@ -364,17 +459,6 @@ router.put('/:userId', adminAuth, [
         success: false,
         message: 'User not found'
       });
-    }
-
-    // Check if username is being changed and if it already exists
-    if (req.body.username && req.body.username !== user.username) {
-      const existingUser = await User.findOne({ username: req.body.username });
-      if (existingUser) {
-        return res.status(400).json({
-          success: false,
-          message: 'Username already taken'
-        });
-      }
     }
 
     // Check if email is being changed and if it already exists
