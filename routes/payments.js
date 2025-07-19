@@ -514,6 +514,39 @@ router.get('/:id', auth, async (req, res) => {
   }
 });
 
+// @route   GET /api/payments/by-intent/:paymentIntentId
+// @desc    Get payment details by Stripe payment intent ID
+// @access  Private
+router.get('/by-intent/:paymentIntentId', auth, async (req, res) => {
+  try {
+    const { paymentIntentId } = req.params;
+
+    const payment = await Payment.findOne({
+      stripePaymentIntentId: paymentIntentId,
+      user: req.user.id
+    }).populate('game', 'name image');
+
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Payment not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: { payment }
+    });
+
+  } catch (error) {
+    console.error('Get payment by intent error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch payment details'
+    });
+  }
+});
+
 // @route   GET /api/payments/admin/all
 // @desc    Get all payments (admin only)
 // @access  Private (Admin)
