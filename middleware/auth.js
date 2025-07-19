@@ -70,4 +70,55 @@ const adminAuth = async (req, res, next) => {
   }
 };
 
-module.exports = { auth, adminAuth }; 
+const cashierAuth = async (req, res, next) => {
+  try {
+    await auth(req, res, () => {
+      if (!['admin', 'cashierCedar', 'cashierLiberty'].includes(req.user.role)) {
+        return res.status(403).json({ 
+          success: false, 
+          message: 'Access denied. Cashier privileges required.' 
+        });
+      }
+      next();
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error.' 
+    });
+  }
+};
+
+const locationSpecificAuth = (allowedLocation) => async (req, res, next) => {
+  try {
+    await auth(req, res, () => {
+      if (req.user.role === 'admin') {
+        // Admin can access all locations
+        next();
+        return;
+      }
+      
+      if (req.user.role === 'cashierCedar' && allowedLocation === 'Cedar Park') {
+        next();
+        return;
+      }
+      
+      if (req.user.role === 'cashierLiberty' && allowedLocation === 'Liberty Hill') {
+        next();
+        return;
+      }
+      
+      return res.status(403).json({ 
+        success: false, 
+        message: `Access denied. You can only manage ${allowedLocation} tokens.` 
+      });
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error.' 
+    });
+  }
+};
+
+module.exports = { auth, adminAuth, cashierAuth, locationSpecificAuth }; 

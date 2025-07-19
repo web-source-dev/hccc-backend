@@ -2,7 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
-const { auth, adminAuth } = require('../middleware/auth');
+const { auth, adminAuth, cashierAuth, locationSpecificAuth } = require('../middleware/auth');
 const TokenBalance = require('../models/TokenBalance');
 const Payment = require('../models/Payment');
 
@@ -337,6 +337,180 @@ router.get('/me/tokens', auth, async (req, res) => {
   }
 });
 
+// Cashier-specific routes
+
+// Get users for cashier (filtered by location access)
+router.get('/cashier/users', cashierAuth, async (req, res) => {
+  try {
+    const { limit = 50, page = 1, search } = req.query;
+    
+    const filter = {};
+    if (search) {
+      filter.$or = [
+        { firstname: { $regex: search, $options: 'i' } },
+        { lastname: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    const users = await User.find(filter)
+      .select('-password')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+    
+    const total = await User.countDocuments(filter);
+    
+    res.json({
+      success: true,
+      data: {
+        users,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get cashier users error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while fetching users'
+    });
+  }
+});
+
+// Get token balances for cashier (filtered by location)
+router.get('/cashier/tokens', cashierAuth, async (req, res) => {
+  try {
+    const { location } = req.query;
+    
+    // Determine allowed locations based on cashier role
+    let allowedLocations = [];
+    if (req.user.role === 'admin') {
+      allowedLocations = ['Cedar Park', 'Liberty Hill'];
+    } else if (req.user.role === 'cashierCedar') {
+      allowedLocations = ['Cedar Park'];
+    } else if (req.user.role === 'cashierLiberty') {
+      allowedLocations = ['Liberty Hill'];
+    }
+    
+    // If specific location is requested, check if cashier has access
+    if (location && !allowedLocations.includes(location)) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. You can only manage ${allowedLocations.join(' and ')} tokens.`
+      });
+    }
+    
+    const filter = {};
+    if (location) {
+      filter.location = location;
+    } else {
+      filter.location = { $in: allowedLocations };
+    }
+    
+    const balances = await TokenBalance.find(filter)
+      .populate('game', 'name')
+      .populate('user', 'firstname lastname email')
+      .sort({ game: 1, location: 1, 'user.firstname': 1 });
+    
+    // Get pending token additions from scheduled payments
+    const pendingPayments = await Payment.find({
+      status: 'succeeded',
+      tokensScheduledFor: { $exists: true, $ne: null },
+      tokensAdded: false,
+      location: filter.location || { $in: allowedLocations }
+    }).populate('game', 'name').populate('user', 'firstname lastname email');
+
+    // Group pending tokens by user, game and location
+    const pendingTokens = {};
+    pendingPayments.forEach(payment => {
+      const key = `${payment.user._id}-${payment.game._id}-${payment.location}`;
+      if (!pendingTokens[key]) {
+        pendingTokens[key] = {
+          user: payment.user,
+          game: payment.game,
+          location: payment.location,
+          tokens: 0,
+          scheduledFor: payment.tokensScheduledFor
+        };
+      }
+      pendingTokens[key].tokens += payment.tokenPackage.tokens;
+    });
+
+    // Add pending token info to balances
+    const balancesWithPending = balances.map(balance => {
+      const key = `${balance.user._id}-${balance.game._id}-${balance.location}`;
+      const pending = pendingTokens[key];
+      return {
+        ...balance.toObject(),
+        pendingTokens: pending ? pending.tokens : 0,
+        tokensScheduledFor: pending ? pending.scheduledFor : null
+      };
+    });
+
+    res.json({ 
+      success: true, 
+      data: { 
+        balances: balancesWithPending,
+        pendingTokens: Object.values(pendingTokens),
+        allowedLocations
+      } 
+    });
+  } catch (error) {
+    console.error('Get cashier token balances error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch token balances' });
+  }
+});
+
+// Adjust token balance for cashier (location-specific)
+router.post('/cashier/tokens/adjust', cashierAuth, async (req, res) => {
+  try {
+    const { userId, gameId, location, delta } = req.body;
+    
+    if (!userId || !gameId || !location || typeof delta !== 'number') {
+      return res.status(400).json({ success: false, message: 'Missing required fields' });
+    }
+    
+    // Check if cashier has access to this location
+    let allowedLocations = [];
+    if (req.user.role === 'admin') {
+      allowedLocations = ['Cedar Park', 'Liberty Hill'];
+    } else if (req.user.role === 'cashierCedar') {
+      allowedLocations = ['Cedar Park'];
+    } else if (req.user.role === 'cashierLiberty') {
+      allowedLocations = ['Liberty Hill'];
+    }
+    
+    if (!allowedLocations.includes(location)) {
+      return res.status(403).json({ 
+        success: false, 
+        message: `Access denied. You can only manage ${allowedLocations.join(' and ')} tokens.` 
+      });
+    }
+    
+    let balance = await TokenBalance.findOne({ user: userId, game: gameId, location });
+    if (!balance) {
+      balance = new TokenBalance({ user: userId, game: gameId, location, tokens: 0 });
+    }
+    
+    balance.tokens = Math.max(0, balance.tokens + delta);
+    await balance.save();
+    
+    // Populate the balance for response
+    await balance.populate('game', 'name');
+    await balance.populate('user', 'firstname lastname email');
+    
+    res.json({ success: true, data: { balance } });
+  } catch (error) {
+    console.error('Cashier adjust token balance error:', error);
+    res.status(500).json({ success: false, message: 'Failed to adjust token balance' });
+  }
+});
+
 // Get all token balances for a user (admin only)
 router.get('/:userId/tokens', adminAuth, async (req, res) => {
   try {
@@ -434,8 +608,8 @@ router.put('/:userId', adminAuth, [
     .withMessage('Please enter a valid email'),
   body('role')
     .optional()
-    .isIn(['user', 'admin'])
-    .withMessage('Role must be either user or admin'),
+    .isIn(['user', 'admin', 'cashierCedar', 'cashierLiberty'])
+    .withMessage('Role must be either user, admin, cashierCedar, or cashierLiberty'),
   body('isActive')
     .optional()
     .isBoolean()
