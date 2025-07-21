@@ -9,7 +9,7 @@ const authRoutes = require('./routes/auth');
 const gamesRoutes = require('./routes/games');
 const paymentsRoutes = require('./routes/payments');
 const eventsRoutes = require('./routes/events');
-const Payment = require('./models/Payment');
+const cronService = require('./services/cronService');
 
 const app = express();
 
@@ -145,37 +145,8 @@ const startServer = async () => {
     console.log(`Environment: ${process.env.NODE_ENV}`);
   });
 
-  // Schedule cleanup of expired payments every 30 minutes
-  setInterval(async () => {
-    try {
-      await Payment.cleanupExpiredPayments();
-    } catch (error) {
-      console.error('Scheduled cleanup failed:', error);
-    }
-  }, 30 * 60 * 1000); // 30 minutes
-
-  // Schedule processing of delayed token additions every 5 minutes
-  setInterval(async () => {
-    try {
-      const processedCount = await Payment.processScheduledTokens();
-      if (processedCount > 0) {
-        console.log(`Scheduled token processing: ${processedCount} payments processed`);
-      }
-    } catch (error) {
-      console.error('Scheduled token processing failed:', error);
-    }
-  }, 5 * 60 * 1000); // 5 minutes
-
-  // Run initial cleanup and token processing
-  try {
-    await Payment.cleanupExpiredPayments();
-    const initialProcessedCount = await Payment.processScheduledTokens();
-    if (initialProcessedCount > 0) {
-      console.log(`Initial token processing: ${initialProcessedCount} payments processed`);
-    }
-  } catch (error) {
-    console.error('Initial cleanup/token processing failed:', error);
-  }
+  // Initialize cron service for scheduled token processing
+  cronService.init();
 };
 
 startServer();

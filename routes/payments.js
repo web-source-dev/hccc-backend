@@ -6,6 +6,7 @@ const Game = require('../models/Game');
 const TokenBalance = require('../models/TokenBalance');
 const { auth, adminAuth } = require('../middleware/auth');
 const { sendEmail } = require('../utils/email');
+const { getTimeRestrictionInfo, checkTimeRestriction } = require('../utils/timeRestrictions');
 
 const router = express.Router();
 
@@ -113,32 +114,8 @@ router.post('/create-payment-intent', auth, [
     // Calculate amount in cents
     const amount = Math.round(tokenPackage.price * 100);
 
-    // Check if payment is made during restricted hours
-    const now = new Date();
-    const currentHour = now.getHours();
-    const currentMinute = now.getMinutes();
-    const currentTime = currentHour * 60 + currentMinute;
-    
-    let timeRestriction = null;
-    const normalizedLocation = locationData.name.toLowerCase().replace(/[-\s]/g, '');
-    
-    if (normalizedLocation.includes('libertyhill') || normalizedLocation.includes('liberty')) {
-      if (currentTime >= 1380) { // After 11 PM
-        timeRestriction = {
-          type: 'liberty_hill',
-          message: 'Tokens purchased after 11:00 PM will not be added until the next business day.',
-          cutoffTime: '11:00 PM'
-        };
-      }
-    } else if (normalizedLocation.includes('cedarpark') || normalizedLocation.includes('cedar')) {
-      if (currentTime >= 180) { // After 3 AM
-        timeRestriction = {
-          type: 'cedar_park',
-          message: 'Tokens purchased after 3:00 AM will not be added until the next business day.',
-          cutoffTime: '3:00 AM'
-        };
-      }
-    }
+    // Check if payment is made during closing hours (Texas time)
+    const timeRestriction = getTimeRestrictionInfo(locationData.name);
 
     // Create payment intent with Stripe
     const paymentIntent = await stripe.paymentIntents.create({
@@ -276,48 +253,23 @@ router.post('/confirm-payment', auth, [
       // If payment succeeded, check time restrictions before adding tokens
       if (status === 'succeeded') {
         try {
-          // Check if payment was made during restricted hours
-          const now = new Date();
-          const currentHour = now.getHours();
-          const currentMinute = now.getMinutes();
-          const currentTime = currentHour * 60 + currentMinute;
+          // Check if payment was made during closing hours (Texas time)
+          const timeRestriction = checkTimeRestriction(payment.location);
           
-          const normalizedLocation = payment.location.toLowerCase().replace(/[-\s]/g, '');
-          let shouldDelayTokens = false;
-          let scheduledTime = null;
-          
-          if (normalizedLocation.includes('cedarpark') || normalizedLocation.includes('cedar')) {
-            if (currentTime >= 180) { // After 3 AM
-              shouldDelayTokens = true;
-              // Schedule for next day at 11 AM
-              scheduledTime = new Date(now);
-              scheduledTime.setDate(scheduledTime.getDate() + 1);
-              scheduledTime.setHours(11, 0, 0, 0);
-            }
-          } else if (normalizedLocation.includes('libertyhill') || normalizedLocation.includes('liberty')) {
-            if (currentTime >= 1380) { // After 11 PM
-              shouldDelayTokens = true;
-              // Schedule for next day at 10 AM
-              scheduledTime = new Date(now);
-              scheduledTime.setDate(scheduledTime.getDate() + 1);
-              scheduledTime.setHours(10, 0, 0, 0);
-            }
-          }
-
-          if (shouldDelayTokens && scheduledTime) {
+          if (timeRestriction.shouldDelay && timeRestriction.scheduledTime) {
             // Mark payment for delayed token addition
-            payment.tokensScheduledFor = scheduledTime;
+            payment.tokensScheduledFor = timeRestriction.scheduledTime;
             payment.tokensAdded = false;
             await payment.save();
             
-            console.log(`Tokens scheduled for ${scheduledTime.toISOString()} for payment ${payment._id}`);
+            console.log(`Tokens scheduled for ${timeRestriction.scheduledTime.toISOString()} for payment ${payment._id}`);
           } else {
             // Add tokens immediately
             await addTokensToBalance(payment);
           }
 
           // Send email notifications
-          await sendEmailNotifications(payment, shouldDelayTokens, scheduledTime);
+          await sendEmailNotifications(payment, timeRestriction.shouldDelay, timeRestriction.scheduledTime);
           
         } catch (error) {
           console.error('Error processing payment:', error);
@@ -663,27 +615,45 @@ router.post('/webhook', async (req, res) => {
           payment.receiptUrl = paymentIntent.charges?.data[0]?.receipt_url;
           await payment.save();
 
-          // Update token balance
+          // Check time restrictions before adding tokens (same logic as confirm-payment)
           try {
-            let tokenBalance = await TokenBalance.findOne({
-              user: payment.user,
-              game: payment.game,
-              location: payment.location
-            });
-
-            if (!tokenBalance) {
-              tokenBalance = new TokenBalance({
+            const timeRestriction = checkTimeRestriction(payment.location);
+            
+            if (timeRestriction.shouldDelay && timeRestriction.scheduledTime) {
+              // Mark payment for delayed token addition
+              payment.tokensScheduledFor = timeRestriction.scheduledTime;
+              payment.tokensAdded = false;
+              await payment.save();
+              
+              console.log(`Webhook: Tokens scheduled for ${timeRestriction.scheduledTime.toISOString()} for payment ${payment._id}`);
+            } else {
+              // Add tokens immediately
+              let tokenBalance = await TokenBalance.findOne({
                 user: payment.user,
                 game: payment.game,
-                location: payment.location,
-                tokens: 0
+                location: payment.location
               });
-            }
 
-            tokenBalance.tokens += payment.tokenPackage.tokens;
-            await tokenBalance.save();
+              if (!tokenBalance) {
+                tokenBalance = new TokenBalance({
+                  user: payment.user,
+                  game: payment.game,
+                  location: payment.location,
+                  tokens: 0
+                });
+              }
+
+              tokenBalance.tokens += payment.tokenPackage.tokens;
+              await tokenBalance.save();
+              
+              // Mark payment as tokens added
+              payment.tokensAdded = true;
+              await payment.save();
+              
+              console.log(`Webhook: Added ${payment.tokenPackage.tokens} tokens for payment ${payment._id}`);
+            }
           } catch (error) {
-            console.error('Error updating token balance via webhook:', error);
+            console.error('Error processing payment via webhook:', error);
           }
         }
         break;

@@ -46,7 +46,7 @@ const setupUsers = async () => {
         firstname: 'Liberty Hill',
         lastname: 'Cashier',
         email: 'libertyhilldigital@gmail.com',
-        password: 'Cashier123!',
+        password: 'LibertyCashier123!',
         role: 'cashierLiberty',
         isActive: true
       },
@@ -54,7 +54,7 @@ const setupUsers = async () => {
         firstname: 'Cedar Park',
         lastname: 'Cashier',
         email: 'cedarparkdigitial601@gmail.com',
-        password: 'Cashier123!',
+        password: 'CedarCashier123!',
         role: 'cashierCedar',
         isActive: true
       }
@@ -101,7 +101,7 @@ const setupUsers = async () => {
     console.log('Personal: nimby45@gmail.com (Casey Barson)');
     console.log('Cashier: libertyhilldigital@gmail.com (Liberty Hill)');
     console.log('Cashier: cedarparkdigitial601@gmail.com (Cedar Park)');
-    console.log('\nAll passwords are set to: User123! (except admin: Admin123!, cashiers: Cashier123!)');
+    console.log('\nAll passwords are set to: User123! (except admin: Admin123!, cashiers: CedarCashier123!, LibertyCashier123!)');
 
     process.exit(0);
   } catch (error) {
