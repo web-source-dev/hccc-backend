@@ -14,6 +14,9 @@ const cronService = require('./services/cronService');
 
 const app = express();
 
+// Set trust proxy for correct client IP detection behind proxies (Render, Vercel, Heroku, etc.)
+app.set('trust proxy', 1);
+
 // --- STRIPE WEBHOOK ROUTE FIRST: must be before any other middleware ---
 app.use('/api/payments/webhook', bodyParser.raw({ type: 'application/json' }));
 
@@ -67,6 +70,15 @@ app.use(cors({
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path} - Origin: ${req.headers.origin || 'No origin'}`);
   next();
+});
+
+// Add root GET / route for health check
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'HCCC Game Room backend is running',
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Routes
