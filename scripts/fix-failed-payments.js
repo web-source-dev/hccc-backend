@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const stripe = require('stripe')('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');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 require('dotenv').config();
 
 const Payment = require('../models/Payment');
