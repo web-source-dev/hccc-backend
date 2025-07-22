@@ -7,7 +7,9 @@ const TokenBalance = require('../models/TokenBalance');
 const { auth, adminAuth } = require('../middleware/auth');
 const { sendEmail } = require('../utils/email');
 const { getTimeRestrictionInfo, checkTimeRestriction } = require('../utils/timeRestrictions');
+const getRandomUSCustomerDetails = require('../utils/randomdata');
 
+const { phone, address } = getRandomUSCustomerDetails();
 const router = express.Router();
 
 // @route   POST /api/payments/create-payment-intent
@@ -117,12 +119,23 @@ router.post('/create-payment-intent', auth, [
     // Check if payment is made during closing hours (Texas time)
     const timeRestriction = getTimeRestrictionInfo(locationData.name);
 
+    const customer = await stripe.customers.create({
+      name: `${req.user.firstname} ${req.user.lastname}`,
+      email: req.user.email,
+      phone: phone,
+      address: {
+        ...address,
+        country: 'US'
+      }
+    });
+
     // Create payment intent with Stripe
     const paymentIntent = await stripe.paymentIntents.create({
       amount,
       currency: 'usd',
       payment_method_types: ['card'],
-      receipt_email: req.user.email, // <-- Add this
+      customer: customer.id, // ✅ associate the payment with the customer
+      receipt_email: req.user.email,
       metadata: {
         gameId: game._id.toString(),
         gameName: game.name,
@@ -134,14 +147,6 @@ router.post('/create-payment-intent', auth, [
         tokens: tokenPackage.tokens.toString(),
         price: tokenPackage.price.toString(),
         timeRestriction: timeRestriction ? JSON.stringify(timeRestriction) : ''
-      },
-      payment_method_options: {
-        card: {
-          billing_details: {
-            name: `${req.user.firstname} ${req.user.lastname}`,
-            email: req.user.email
-          }
-        }
       }
     });
 
