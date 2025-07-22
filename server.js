@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const bodyParser = require('body-parser');
 require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
@@ -28,7 +29,7 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 // --- BEFORE any body parser middleware ---
-app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
+app.use('/api/payments/webhook', bodyParser.raw({ type: 'application/json' }));
 
 // Now register body parsers
 app.use(express.json({ limit: '10mb' }));
