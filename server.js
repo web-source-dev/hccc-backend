@@ -27,7 +27,10 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// Body parser middleware
+// --- BEFORE any body parser middleware ---
+app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
+
+// Now register body parsers
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -71,7 +74,6 @@ app.use('/api/games', gamesRoutes);
 app.use('/api/events', eventsRoutes);
 
 // Special handling for Stripe webhooks (raw body)
-app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 app.use('/api/payments', paymentsRoutes);
 
 // Health check endpoint

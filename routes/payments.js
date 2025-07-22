@@ -241,41 +241,38 @@ router.post('/confirm-payment', auth, [
       status = 'canceled';
     } else if (paymentIntent.status === 'requires_payment_method') {
       status = 'failed';
+    } else if (paymentIntent.status === 'expired') {
+      status = 'expired';
     }
 
-    // Only update if status has changed
-    if (payment.status !== status) {
+    // Always update if status has changed or if payment is still pending/processing but Stripe says failed/canceled/expired
+    if (payment.status !== status || ['failed', 'canceled', 'expired'].includes(status) && payment.status !== status) {
       payment.status = status;
       payment.paymentMethod = paymentIntent.payment_method_types[0];
       payment.receiptUrl = paymentIntent.charges?.data[0]?.receipt_url;
-
       await payment.save();
+    }
 
-      // If payment succeeded, check time restrictions before adding tokens
-      if (status === 'succeeded') {
-        try {
-          // Check if payment was made during closing hours (Texas time)
-          const timeRestriction = checkTimeRestriction(payment.location);
-          
-          if (timeRestriction.shouldDelay && timeRestriction.scheduledTime) {
-            // Mark payment for delayed token addition
-            payment.tokensScheduledFor = timeRestriction.scheduledTime;
-            payment.tokensAdded = false;
-            await payment.save();
-            
-            console.log(`Tokens scheduled for ${timeRestriction.scheduledTime.toISOString()} for payment ${payment._id}`);
-          } else {
-            // Add tokens immediately
-            await addTokensToBalance(payment);
-          }
-
-          // Send email notifications
-          await sendEmailNotifications(payment, timeRestriction.shouldDelay, timeRestriction.scheduledTime);
-          
-        } catch (error) {
-          console.error('Error processing payment:', error);
-          // Don't fail the payment confirmation if token processing fails
+    // If payment succeeded, check time restrictions before adding tokens
+    if (status === 'succeeded' && !payment.tokensAdded) {
+      try {
+        // Check if payment was made during closing hours (Texas time)
+        const timeRestriction = checkTimeRestriction(payment.location);
+        if (timeRestriction.shouldDelay && timeRestriction.scheduledTime) {
+          // Mark payment for delayed token addition
+          payment.tokensScheduledFor = timeRestriction.scheduledTime;
+          payment.tokensAdded = false;
+          await payment.save();
+          console.log(`Tokens scheduled for ${timeRestriction.scheduledTime.toISOString()} for payment ${payment._id}`);
+        } else {
+          // Add tokens immediately
+          await addTokensToBalance(payment);
         }
+        // Send email notifications
+        await sendEmailNotifications(payment, timeRestriction.shouldDelay, timeRestriction.scheduledTime);
+      } catch (error) {
+        console.error('Error processing payment:', error);
+        // Don't fail the payment confirmation if token processing fails
       }
     }
 
