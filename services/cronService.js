@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const Payment = require('../models/Payment');
 const TokenBalance = require('../models/TokenBalance');
 const { sendEmail } = require('../utils/email');
+const { fixFailedPayments } = require('../scripts/fix-failed-payments');
 
 class CronService {
   constructor() {
@@ -16,6 +17,17 @@ class CronService {
     }
 
     console.log('Initializing cron service...');
+
+    // Fix failed payments every 10 minutes
+    cron.schedule('*/5 * * * *', async () => {
+      console.log(`[${new Date().toISOString()}] Running fix failed payments check...`);
+      try {
+        const result = await fixFailedPayments();
+        console.log(`[${new Date().toISOString()}] Fix failed payments completed:`, result);
+      } catch (error) {
+        console.error(`[${new Date().toISOString()}] Error in fix failed payments:`, error);
+      }
+    });
 
     // Cedar Park tokens at 11:00 AM Texas time (UTC-6, so 17:00 UTC)
     cron.schedule('0 17 * * *', async () => {
@@ -157,6 +169,7 @@ class CronService {
     return {
       isInitialized: this.isInitialized,
       jobs: {
+        fixFailedPayments: '*/5 * * * * (every 5 minutes)',
         cedarPark: '0 17 * * * (11:00 AM Texas time)',
         libertyHill: '0 16 * * * (10:00 AM Texas time)',
       }

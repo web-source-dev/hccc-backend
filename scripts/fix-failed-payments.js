@@ -144,22 +144,42 @@ async function fixFailedPayments() {
       }
     }
 
+    const result = {
+      totalChecked: pendingPayments.length,
+      updated: updatedCount,
+      tokensAdded: tokensAddedCount,
+      errors: errorCount
+    };
+
     console.log(`\nFix completed:`);
-    console.log(`- Total payments checked: ${pendingPayments.length}`);
-    console.log(`- Payments updated: ${updatedCount}`);
-    console.log(`- Payments with tokens added: ${tokensAddedCount}`);
-    console.log(`- Errors encountered: ${errorCount}`);
+    console.log(`- Total payments checked: ${result.totalChecked}`);
+    console.log(`- Payments updated: ${result.updated}`);
+    console.log(`- Payments with tokens added: ${result.tokensAdded}`);
+    console.log(`- Errors encountered: ${result.errors}`);
+
+    return result;
 
   } catch (error) {
     console.error('Error fixing failed payments:', error);
+    throw error;
   }
 }
 
-// Run the fix
-const runFix = async () => {
-  await connectDB();
-  await fixFailedPayments();
-  process.exit(0);
+// Export functions for use in routes
+module.exports = {
+  fixFailedPayments,
+  addTokensToBalance,
+  mapStripeStatusToDbStatus,
+  connectDB
 };
 
-runFix(); 
+// Run the fix if this file is executed directly
+if (require.main === module) {
+  const runFix = async () => {
+    await connectDB();
+    await fixFailedPayments();
+    process.exit(0);
+  };
+
+  runFix();
+} 
