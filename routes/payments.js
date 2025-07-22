@@ -121,7 +121,8 @@ router.post('/create-payment-intent', auth, [
     const paymentIntent = await stripe.paymentIntents.create({
       amount,
       currency: 'usd',
-      payment_method_types: ['card'], // Restrict to card only
+      payment_method_types: ['card'],
+      receipt_email: req.user.email, // <-- Add this
       metadata: {
         gameId: game._id.toString(),
         gameName: game.name,
@@ -133,6 +134,14 @@ router.post('/create-payment-intent', auth, [
         tokens: tokenPackage.tokens.toString(),
         price: tokenPackage.price.toString(),
         timeRestriction: timeRestriction ? JSON.stringify(timeRestriction) : ''
+      },
+      payment_method_options: {
+        card: {
+          billing_details: {
+            name: `${req.user.firstname} ${req.user.lastname}`,
+            email: req.user.email
+          }
+        }
       }
     });
 

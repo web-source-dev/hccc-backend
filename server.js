@@ -32,8 +32,8 @@ app.use('/api/', limiter);
 app.use('/api/payments/webhook', bodyParser.raw({ type: 'application/json' }));
 
 // Now register body parsers
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
 // CORS configuration
 const allowedOrigins = [
