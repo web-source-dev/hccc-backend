@@ -121,6 +121,7 @@ router.post('/create-payment-intent', auth, [
     const paymentIntent = await stripe.paymentIntents.create({
       amount,
       currency: 'usd',
+      payment_method_types: ['card'], // Restrict to card only
       metadata: {
         gameId: game._id.toString(),
         gameName: game.name,
