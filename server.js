@@ -14,6 +14,9 @@ const cronService = require('./services/cronService');
 
 const app = express();
 
+// --- STRIPE WEBHOOK ROUTE FIRST: must be before any other middleware ---
+app.use('/api/payments/webhook', bodyParser.raw({ type: 'application/json' }));
+
 // Security middleware
 app.use(helmet());
 
@@ -27,9 +30,6 @@ const limiter = rateLimit({
   }
 });
 app.use('/api/', limiter);
-
-// --- BEFORE any body parser middleware ---
-app.use('/api/payments/webhook', bodyParser.raw({ type: 'application/json' }));
 
 // Now register body parsers
 app.use(bodyParser.json({ limit: '10mb' }));
@@ -74,7 +74,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/games', gamesRoutes);
 app.use('/api/events', eventsRoutes);
 
-// Special handling for Stripe webhooks (raw body)
+// Register all other payment routes (webhook already handled above)
 app.use('/api/payments', paymentsRoutes);
 
 // Health check endpoint
