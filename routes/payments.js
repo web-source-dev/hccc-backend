@@ -231,25 +231,38 @@ router.post('/confirm-payment', auth, [
       });
     }
 
-    // Update payment status based on Stripe status
-    let status = 'pending';
-    if (paymentIntent.status === 'succeeded') {
-      status = 'succeeded';
-    } else if (paymentIntent.status === 'processing') {
-      status = 'processing';
-    } else if (paymentIntent.status === 'canceled') {
-      status = 'canceled';
-    } else if (paymentIntent.status === 'requires_payment_method') {
-      status = 'failed';
-    } else if (paymentIntent.status === 'expired') {
-      status = 'expired';
+    // Get detailed error information for failed payments
+    let errorDetails = null;
+    if (paymentIntent.status === 'requires_payment_method' && paymentIntent.last_payment_error) {
+      errorDetails = {
+        code: paymentIntent.last_payment_error.code,
+        message: paymentIntent.last_payment_error.message,
+        decline_code: paymentIntent.last_payment_error.decline_code,
+        type: paymentIntent.last_payment_error.type
+      };
     }
 
-    // Always update if status has changed or if payment is still pending/processing but Stripe says failed/canceled/expired
-    if (payment.status !== status || ['failed', 'canceled', 'expired'].includes(status) && payment.status !== status) {
+    // Update payment status based on Stripe status
+    const status = mapStripeStatusToDbStatus(paymentIntent.status);
+
+    // Always update if status has changed
+    if (payment.status !== status) {
       payment.status = status;
       payment.paymentMethod = paymentIntent.payment_method_types[0];
       payment.receiptUrl = paymentIntent.charges?.data[0]?.receipt_url;
+      
+      // Add error details to metadata if payment failed
+      if (status === 'failed' && errorDetails) {
+        payment.metadata = {
+          ...payment.metadata,
+          failureReason: errorDetails.message,
+          errorCode: errorDetails.code,
+          declineCode: errorDetails.decline_code,
+          errorType: errorDetails.type,
+          failedAt: new Date().toISOString()
+        };
+      }
+      
       await payment.save();
     }
 
@@ -276,6 +289,19 @@ router.post('/confirm-payment', auth, [
       }
     }
 
+    // Return appropriate response based on status
+    if (status === 'failed') {
+      return res.status(400).json({
+        success: false,
+        message: errorDetails?.message || 'Payment failed',
+        data: {
+          payment,
+          status: paymentIntent.status,
+          error: errorDetails
+        }
+      });
+    }
+
     res.json({
       success: true,
       data: {
@@ -292,6 +318,30 @@ router.post('/confirm-payment', auth, [
     });
   }
 });
+
+// Helper function to map Stripe status to database status
+function mapStripeStatusToDbStatus(stripeStatus) {
+  switch (stripeStatus) {
+    case 'succeeded':
+      return 'succeeded';
+    case 'processing':
+      return 'processing';
+    case 'canceled':
+      return 'canceled';
+    case 'requires_payment_method':
+      return 'failed';
+    case 'requires_action':
+      return 'pending';
+    case 'requires_confirmation':
+      return 'pending';
+    case 'requires_capture':
+      return 'pending';
+    case 'expired':
+      return 'expired';
+    default:
+      return 'pending';
+  }
+}
 
 // Helper function to add tokens to balance
 async function addTokensToBalance(payment) {
@@ -483,6 +533,36 @@ router.get('/by-intent/:paymentIntentId', auth, async (req, res) => {
       });
     }
 
+    // Get latest status from Stripe if payment is still pending
+    if (payment.status === 'pending' || payment.status === 'processing') {
+      try {
+        const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+        
+        // Update payment status if it has changed
+        const dbStatus = mapStripeStatusToDbStatus(paymentIntent.status);
+        if (payment.status !== dbStatus) {
+          payment.status = dbStatus;
+          
+          // Add error details if payment failed
+          if (dbStatus === 'failed' && paymentIntent.last_payment_error) {
+            payment.metadata = {
+              ...payment.metadata,
+              failureReason: paymentIntent.last_payment_error.message,
+              errorCode: paymentIntent.last_payment_error.code,
+              declineCode: paymentIntent.last_payment_error.decline_code,
+              errorType: paymentIntent.last_payment_error.type,
+              failedAt: new Date().toISOString()
+            };
+          }
+          
+          await payment.save();
+        }
+      } catch (stripeError) {
+        console.error('Error retrieving payment intent from Stripe:', stripeError);
+        // Continue with the payment record we have
+      }
+    }
+
     res.json({
       success: true,
       data: { payment }
@@ -493,6 +573,112 @@ router.get('/by-intent/:paymentIntentId', auth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch payment details'
+    });
+  }
+});
+
+// @route   POST /api/payments/check-status
+// @desc    Check payment status and sync with Stripe
+// @access  Private
+router.post('/check-status', auth, [
+  body('paymentIntentId')
+    .notEmpty()
+    .withMessage('Payment intent ID is required')
+], async (req, res) => {
+  try {
+    // Check for validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { paymentIntentId } = req.body;
+
+    // Find payment record
+    const payment = await Payment.findOne({
+      stripePaymentIntentId: paymentIntentId,
+      user: req.user.id
+    }).populate('game', 'name image');
+
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Payment record not found'
+      });
+    }
+
+    // Get latest status from Stripe
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    
+    // Get detailed error information for failed payments
+    let errorDetails = null;
+    if (paymentIntent.status === 'requires_payment_method' && paymentIntent.last_payment_error) {
+      errorDetails = {
+        code: paymentIntent.last_payment_error.code,
+        message: paymentIntent.last_payment_error.message,
+        decline_code: paymentIntent.last_payment_error.decline_code,
+        type: paymentIntent.last_payment_error.type
+      };
+    }
+
+    // Update payment status if it has changed
+    const status = mapStripeStatusToDbStatus(paymentIntent.status);
+
+    if (payment.status !== status) {
+      payment.status = status;
+      payment.paymentMethod = paymentIntent.payment_method_types[0];
+      payment.receiptUrl = paymentIntent.charges?.data[0]?.receipt_url;
+      
+      // Add error details to metadata if payment failed
+      if (status === 'failed' && errorDetails) {
+        payment.metadata = {
+          ...payment.metadata,
+          failureReason: errorDetails.message,
+          errorCode: errorDetails.code,
+          declineCode: errorDetails.decline_code,
+          errorType: errorDetails.type,
+          failedAt: new Date().toISOString()
+        };
+      }
+      
+      await payment.save();
+    }
+
+    // Process successful payments
+    if (status === 'succeeded' && !payment.tokensAdded) {
+      try {
+        const timeRestriction = checkTimeRestriction(payment.location);
+        if (timeRestriction.shouldDelay && timeRestriction.scheduledTime) {
+          payment.tokensScheduledFor = timeRestriction.scheduledTime;
+          payment.tokensAdded = false;
+          await payment.save();
+        } else {
+          await addTokensToBalance(payment);
+        }
+        await sendEmailNotifications(payment, timeRestriction.shouldDelay, timeRestriction.scheduledTime);
+      } catch (error) {
+        console.error('Error processing successful payment:', error);
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        payment,
+        status: paymentIntent.status,
+        error: errorDetails
+      }
+    });
+
+  } catch (error) {
+    console.error('Check payment status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check payment status'
     });
   }
 });
@@ -597,77 +783,40 @@ router.post('/webhook', async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  console.log(`Processing webhook event: ${event.type}`);
+
   try {
     switch (event.type) {
       case 'payment_intent.succeeded':
-        const paymentIntent = event.data.object;
-
-        // Find and update payment record
-        const payment = await Payment.findOne({
-          stripePaymentIntentId: paymentIntent.id
-        });
-
-        if (payment && payment.status !== 'succeeded') {
-          payment.status = 'succeeded';
-          payment.paymentMethod = paymentIntent.payment_method_types[0];
-          payment.receiptUrl = paymentIntent.charges?.data[0]?.receipt_url;
-          await payment.save();
-
-          // Check time restrictions before adding tokens (same logic as confirm-payment)
-          try {
-            const timeRestriction = checkTimeRestriction(payment.location);
-            
-            if (timeRestriction.shouldDelay && timeRestriction.scheduledTime) {
-              // Mark payment for delayed token addition
-              payment.tokensScheduledFor = timeRestriction.scheduledTime;
-              payment.tokensAdded = false;
-              await payment.save();
-              
-              console.log(`Webhook: Tokens scheduled for ${timeRestriction.scheduledTime.toISOString()} for payment ${payment._id}`);
-            } else {
-              // Add tokens immediately
-              let tokenBalance = await TokenBalance.findOne({
-                user: payment.user,
-                game: payment.game,
-                location: payment.location
-              });
-
-              if (!tokenBalance) {
-                tokenBalance = new TokenBalance({
-                  user: payment.user,
-                  game: payment.game,
-                  location: payment.location,
-                  tokens: 0
-                });
-              }
-
-              tokenBalance.tokens += payment.tokenPackage.tokens;
-              await tokenBalance.save();
-              
-              // Mark payment as tokens added
-              payment.tokensAdded = true;
-              await payment.save();
-              
-              console.log(`Webhook: Added ${payment.tokenPackage.tokens} tokens for payment ${payment._id}`);
-            }
-          } catch (error) {
-            console.error('Error processing payment via webhook:', error);
-          }
-        }
+        await handlePaymentSuccess(event.data.object);
         break;
 
       case 'payment_intent.payment_failed':
-        const failedPaymentIntent = event.data.object;
+        await handlePaymentFailure(event.data.object);
+        break;
 
-        // Find and update payment record
-        const failedPayment = await Payment.findOne({
-          stripePaymentIntentId: failedPaymentIntent.id
-        });
+      case 'payment_intent.canceled':
+        await handlePaymentCanceled(event.data.object);
+        break;
 
-        if (failedPayment && failedPayment.status !== 'failed') {
-          failedPayment.status = 'failed';
-          await failedPayment.save();
-        }
+      case 'payment_intent.processing':
+        await handlePaymentProcessing(event.data.object);
+        break;
+
+      case 'payment_intent.requires_action':
+        await handlePaymentRequiresAction(event.data.object);
+        break;
+
+      case 'charge.failed':
+        await handleChargeFailed(event.data.object);
+        break;
+
+      case 'charge.succeeded':
+        await handleChargeSucceeded(event.data.object);
+        break;
+
+      case 'charge.dispute.created':
+        await handleChargeDispute(event.data.object);
         break;
 
       default:
@@ -676,9 +825,320 @@ router.post('/webhook', async (req, res) => {
 
     res.json({ received: true });
   } catch (error) {
-    console.error('Webhook error:', error);
+    console.error('Webhook processing error:', error);
     res.status(500).json({ error: 'Webhook processing failed' });
   }
 });
+
+// Helper function to handle successful payments
+async function handlePaymentSuccess(paymentIntent) {
+  console.log(`Processing successful payment: ${paymentIntent.id}`);
+  
+  const payment = await Payment.findOne({
+    stripePaymentIntentId: paymentIntent.id
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for successful payment: ${paymentIntent.id}`);
+    return;
+  }
+
+  if (payment.status === 'succeeded') {
+    console.log(`Payment ${payment._id} already marked as succeeded`);
+    return;
+  }
+
+  // Update payment status
+  payment.status = 'succeeded';
+  payment.paymentMethod = paymentIntent.payment_method_types[0];
+  payment.receiptUrl = paymentIntent.charges?.data[0]?.receipt_url;
+  await payment.save();
+
+  console.log(`Payment ${payment._id} marked as succeeded`);
+
+  // Process tokens
+  try {
+    const timeRestriction = checkTimeRestriction(payment.location);
+    
+    if (timeRestriction.shouldDelay && timeRestriction.scheduledTime) {
+      // Mark payment for delayed token addition
+      payment.tokensScheduledFor = timeRestriction.scheduledTime;
+      payment.tokensAdded = false;
+      await payment.save();
+      
+      console.log(`Webhook: Tokens scheduled for ${timeRestriction.scheduledTime.toISOString()} for payment ${payment._id}`);
+    } else {
+      // Add tokens immediately
+      await addTokensToBalance(payment);
+    }
+
+    // Send email notifications
+    await sendEmailNotifications(payment, timeRestriction.shouldDelay, timeRestriction.scheduledTime);
+  } catch (error) {
+    console.error('Error processing successful payment:', error);
+  }
+}
+
+// Helper function to handle payment failures
+async function handlePaymentFailure(paymentIntent) {
+  console.log(`Processing failed payment: ${paymentIntent.id}`);
+  
+  const payment = await Payment.findOne({
+    stripePaymentIntentId: paymentIntent.id
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for failed payment: ${paymentIntent.id}`);
+    return;
+  }
+
+  // Get detailed error information
+  const lastPaymentError = paymentIntent.last_payment_error;
+  let failureReason = 'Payment failed';
+  let errorCode = 'unknown_error';
+
+  if (lastPaymentError) {
+    failureReason = lastPaymentError.message || 'Payment failed';
+    errorCode = lastPaymentError.code || 'unknown_error';
+    
+    console.log(`Payment failure details - Code: ${errorCode}, Message: ${failureReason}`);
+  }
+
+  // Update payment status
+  payment.status = 'failed';
+  payment.metadata = {
+    ...payment.metadata,
+    failureReason,
+    errorCode,
+    failedAt: new Date().toISOString()
+  };
+  await payment.save();
+
+  console.log(`Payment ${payment._id} marked as failed: ${failureReason}`);
+
+  // Send failure notification email
+  try {
+    await sendFailureNotification(payment, failureReason, errorCode);
+  } catch (error) {
+    console.error('Error sending failure notification:', error);
+  }
+}
+
+// Helper function to handle canceled payments
+async function handlePaymentCanceled(paymentIntent) {
+  console.log(`Processing canceled payment: ${paymentIntent.id}`);
+  
+  const payment = await Payment.findOne({
+    stripePaymentIntentId: paymentIntent.id
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for canceled payment: ${paymentIntent.id}`);
+    return;
+  }
+
+  payment.status = 'canceled';
+  payment.metadata = {
+    ...payment.metadata,
+    canceledAt: new Date().toISOString(),
+    cancellationReason: paymentIntent.cancellation_reason || 'user_canceled'
+  };
+  await payment.save();
+
+  console.log(`Payment ${payment._id} marked as canceled`);
+}
+
+// Helper function to handle processing payments
+async function handlePaymentProcessing(paymentIntent) {
+  console.log(`Processing payment in processing state: ${paymentIntent.id}`);
+  
+  const payment = await Payment.findOne({
+    stripePaymentIntentId: paymentIntent.id
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for processing payment: ${paymentIntent.id}`);
+    return;
+  }
+
+  payment.status = 'processing';
+  await payment.save();
+
+  console.log(`Payment ${payment._id} marked as processing`);
+}
+
+// Helper function to handle payments requiring action
+async function handlePaymentRequiresAction(paymentIntent) {
+  console.log(`Processing payment requiring action: ${paymentIntent.id}`);
+  
+  const payment = await Payment.findOne({
+    stripePaymentIntentId: paymentIntent.id
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for action-required payment: ${paymentIntent.id}`);
+    return;
+  }
+
+  // Keep status as pending but add metadata about required action
+  payment.metadata = {
+    ...payment.metadata,
+    requiresAction: true,
+    actionType: paymentIntent.next_action?.type || 'unknown',
+    lastActionCheck: new Date().toISOString()
+  };
+  await payment.save();
+
+  console.log(`Payment ${payment._id} marked as requiring action: ${paymentIntent.next_action?.type}`);
+}
+
+// Helper function to handle failed charges
+async function handleChargeFailed(charge) {
+  console.log(`Processing failed charge: ${charge.id}`);
+  
+  const payment = await Payment.findOne({
+    stripePaymentIntentId: charge.payment_intent
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for failed charge: ${charge.id}`);
+    return;
+  }
+
+  // Update payment status to failed
+  payment.status = 'failed';
+  payment.metadata = {
+    ...payment.metadata,
+    failureReason: charge.failure_message || 'Charge failed',
+    errorCode: charge.failure_code || 'charge_failed',
+    failedAt: new Date().toISOString(),
+    chargeId: charge.id
+  };
+  await payment.save();
+
+  console.log(`Payment ${payment._id} marked as failed due to charge failure: ${charge.failure_message}`);
+}
+
+// Helper function to handle successful charges
+async function handleChargeSucceeded(charge) {
+  console.log(`Processing successful charge: ${charge.id}`);
+  
+  const payment = await Payment.findOne({
+    stripePaymentIntentId: charge.payment_intent
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for successful charge: ${charge.id}`);
+    return;
+  }
+
+  // Update receipt URL if not already set
+  if (!payment.receiptUrl && charge.receipt_url) {
+    payment.receiptUrl = charge.receipt_url;
+    await payment.save();
+  }
+
+  console.log(`Charge succeeded for payment ${payment._id}`);
+}
+
+// Helper function to handle charge disputes
+async function handleChargeDispute(dispute) {
+  console.log(`Processing charge dispute: ${dispute.id}`);
+  
+  const payment = await Payment.findOne({
+    stripePaymentIntentId: dispute.charge.payment_intent
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for dispute: ${dispute.id}`);
+    return;
+  }
+
+  // Add dispute information to metadata
+  payment.metadata = {
+    ...payment.metadata,
+    disputeId: dispute.id,
+    disputeReason: dispute.reason,
+    disputeAmount: dispute.amount,
+    disputeStatus: dispute.status,
+    disputedAt: new Date().toISOString()
+  };
+  await payment.save();
+
+  console.log(`Dispute recorded for payment ${payment._id}: ${dispute.reason}`);
+}
+
+// Helper function to send failure notification
+async function sendFailureNotification(payment, failureReason, errorCode) {
+  try {
+    const adminSubject = `❌ Payment Failed - ${payment.location}`;
+    const adminHtml = `
+      <div style="font-family: Arial, sans-serif; background: #f9f9f9; padding: 24px; border-radius: 8px; border: 1px solid #e2e8f0; max-width: 520px; margin: auto;">
+        <div style="text-align: center; margin-bottom: 18px;">
+          <h2 style="color: #dc2626; margin: 0;">Payment Failed Alert</h2>
+        </div>
+        <p><b>User:</b> ${payment.metadata.userFirstname} ${payment.metadata.userLastname} (${payment.metadata.userEmail})</p>
+        <p><b>Game:</b> ${payment.metadata.gameName}</p>
+        <p><b>Amount:</b> $${payment.amount}</p>
+        <p><b>Location:</b> ${payment.location}</p>
+        <p><b>Failure Reason:</b> <span style="color: #dc2626;">${failureReason}</span></p>
+        <p><b>Error Code:</b> ${errorCode}</p>
+        <p><b>Payment ID:</b> ${payment._id}</p>
+        <p><b>Stripe ID:</b> ${payment.stripePaymentIntentId}</p>
+      </div>
+    `;
+
+    // Determine admin email by location
+    let adminEmail = null;
+    if (payment.location.toLowerCase().includes('cedar')) {
+      adminEmail = process.env.ADMIN_EMAIL_CEDAR_PARK;
+    } else if (payment.location.toLowerCase().includes('liberty')) {
+      adminEmail = process.env.ADMIN_EMAIL_LIBERTY_HILL;
+    }
+
+    if (adminEmail) {
+      await sendEmail({
+        to: adminEmail,
+        subject: adminSubject,
+        html: adminHtml,
+        text: `Payment Failed Alert\n\nUser: ${payment.metadata.userFirstname} ${payment.metadata.userLastname} (${payment.metadata.userEmail})\nGame: ${payment.metadata.gameName}\nAmount: $${payment.amount}\nLocation: ${payment.location}\nFailure Reason: ${failureReason}\nError Code: ${errorCode}`
+      });
+    }
+
+    // Send user notification
+    const userSubject = 'Payment Failed - HCCC Games';
+    const userHtml = `
+      <div style="font-family: Arial, sans-serif; background: #f9f9f9; padding: 24px; border-radius: 8px; border: 1px solid #e2e8f0; max-width: 520px; margin: auto;">
+        <div style="text-align: center; margin-bottom: 18px;">
+          <h2 style="color: #dc2626; margin: 0;">Payment Failed</h2>
+        </div>
+        <p>Hi <b>${payment.metadata.userFirstname}</b>,</p>
+        <p>We're sorry, but your payment for <b>${payment.metadata.gameName}</b> at <b>${payment.location}</b> was not successful.</p>
+        <div style="background: #fee2e2; border: 1px solid #fecaca; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <p style="color: #dc2626; margin: 0;"><b>Reason:</b> ${failureReason}</p>
+        </div>
+        <p><b>Order Details:</b></p>
+        <ul style="background: #fff; padding: 16px; border-radius: 6px; list-style: none;">
+          <li><b>Game:</b> ${payment.metadata.gameName}</li>
+          <li><b>Tokens:</b> ${payment.tokenPackage.tokens}</li>
+          <li><b>Amount:</b> $${payment.amount}</li>
+          <li><b>Location:</b> ${payment.location}</li>
+        </ul>
+        <p>Please try again with a different payment method or contact us if you need assistance.</p>
+        <p>Thank you for choosing HCCC Games!</p>
+      </div>
+    `;
+
+    await sendEmail({
+      to: payment.metadata.userEmail,
+      subject: userSubject,
+      html: userHtml,
+      text: `Payment Failed\n\nHi ${payment.metadata.userFirstname},\n\nWe're sorry, but your payment for ${payment.metadata.gameName} at ${payment.location} was not successful.\n\nReason: ${failureReason}\n\nOrder Details:\n- Game: ${payment.metadata.gameName}\n- Tokens: ${payment.tokenPackage.tokens}\n- Amount: $${payment.amount}\n- Location: ${payment.location}\n\nPlease try again with a different payment method or contact us if you need assistance.\n\nThank you for choosing HCCC Games!`
+    });
+
+  } catch (error) {
+    console.error('Failed to send failure notification:', error);
+  }
+}
 
 module.exports = router; 

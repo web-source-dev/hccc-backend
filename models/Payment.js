@@ -66,7 +66,25 @@ const paymentSchema = new mongoose.Schema({
     userFirstname: String,
     userLastname: String,
     userEmail: String,
-    timeRestriction: String
+    timeRestriction: String,
+    // Error tracking fields
+    failureReason: String,
+    errorCode: String,
+    declineCode: String,
+    errorType: String,
+    failedAt: String,
+    // Action tracking fields
+    requiresAction: Boolean,
+    actionType: String,
+    lastActionCheck: String,
+    // Dispute tracking fields
+    disputeId: String,
+    disputeReason: String,
+    disputeAmount: Number,
+    disputeStatus: String,
+    disputedAt: String,
+    // Charge tracking
+    chargeId: String
   }
 }, {
   timestamps: true
