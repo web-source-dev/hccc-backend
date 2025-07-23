@@ -33,6 +33,22 @@ async function addTokensToBalance(payment) {
   console.log(`Added ${payment.tokenPackage.tokens} tokens for payment ${payment._id}`);
 }
 
+// Helper function to map Stripe status to display status
+function getDisplayStatus(stripeStatus) {
+  if (
+    stripeStatus === 'incomplete' ||
+    (typeof stripeStatus === 'string' && stripeStatus.startsWith('requires_'))
+  ) {
+    return 'incomplete';
+  }
+  if (stripeStatus === 'processing') return 'processing';
+  if (stripeStatus === 'succeeded') return 'succeeded';
+  if ([
+    'failed', 'canceled', 'blocked', 'expired'
+  ].includes(stripeStatus)) return stripeStatus;
+  return 'incomplete'; // fallback
+}
+
 // Connect to MongoDB
 const connectDB = async () => {
   try {
@@ -96,7 +112,7 @@ async function fixFailedPayments() {
           await payment.save();
           updatedCount++;
 
-          console.log(`Updated payment ${payment._id} to status: ${paymentIntent.status}`);
+          console.log(`Updated payment ${payment._id} to status: ${paymentIntent.status} (display: ${getDisplayStatus(paymentIntent.status)})`);
         }
 
         // If Stripe says succeeded but DB is pending/processing, add tokens if not already added

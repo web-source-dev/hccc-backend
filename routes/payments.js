@@ -12,6 +12,22 @@ const getRandomUSCustomerDetails = require('../utils/randomdata');
 const { phone, address } = getRandomUSCustomerDetails();
 const router = express.Router();
 
+// Helper function to map Stripe status to display status
+function getDisplayStatus(stripeStatus) {
+  if (
+    stripeStatus === 'incomplete' ||
+    (typeof stripeStatus === 'string' && stripeStatus.startsWith('requires_'))
+  ) {
+    return 'incomplete';
+  }
+  if (stripeStatus === 'processing') return 'processing';
+  if (stripeStatus === 'succeeded') return 'succeeded';
+  if ([
+    'failed', 'canceled', 'blocked', 'expired'
+  ].includes(stripeStatus)) return stripeStatus;
+  return 'incomplete'; // fallback
+}
+
 // @route   POST /api/payments/create-payment-intent
 // @desc    Create a payment intent for token purchase
 // @access  Private
@@ -461,7 +477,7 @@ router.get('/user-payments', auth, async (req, res) => {
 
     res.json({
       success: true,
-      data: { payments }
+      data: { payments: payments.map(p => ({ ...p.toObject(), displayStatus: getDisplayStatus(p.status) })) }
     });
 
   } catch (error) {
@@ -492,7 +508,7 @@ router.get('/:id', auth, async (req, res) => {
 
     res.json({
       success: true,
-      data: { payment }
+      data: { payment: { ...payment.toObject(), displayStatus: getDisplayStatus(payment.status) } }
     });
 
   } catch (error) {
@@ -555,7 +571,7 @@ router.get('/by-intent/:paymentIntentId', auth, async (req, res) => {
 
     res.json({
       success: true,
-      data: { payment }
+      data: { payment: { ...payment.toObject(), displayStatus: getDisplayStatus(payment.status) } }
     });
 
   } catch (error) {
@@ -695,7 +711,7 @@ router.get('/admin/all', adminAuth, async (req, res) => {
     res.json({
       success: true,
       data: {
-        payments,
+        payments: payments.map(p => ({ ...p.toObject(), displayStatus: getDisplayStatus(p.status) })),
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
