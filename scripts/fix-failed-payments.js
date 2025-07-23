@@ -49,6 +49,46 @@ function getDisplayStatus(stripeStatus) {
   return 'incomplete'; // fallback
 }
 
+// Helper function to map Stripe status and error to a precise display status
+function getPreciseDisplayStatus(stripeStatus, lastPaymentError) {
+  if (
+    stripeStatus === 'incomplete' ||
+    (typeof stripeStatus === 'string' && stripeStatus.startsWith('requires_'))
+  ) {
+    if (lastPaymentError) {
+      const code = lastPaymentError.code;
+      const decline = lastPaymentError.decline_code;
+      // Blocked/fraud
+      if (
+        code === 'card_declined' &&
+        (decline === 'fraudulent' || decline === 'blocked' || decline === 'lost_card' || decline === 'stolen_card')
+      ) {
+        return 'blocked';
+      }
+      // General card declined/insufficient funds/expired/incorrect cvc
+      if (
+        code === 'card_declined' ||
+        code === 'insufficient_funds' ||
+        code === 'expired_card' ||
+        code === 'incorrect_cvc'
+      ) {
+        return 'failed';
+      }
+      // Authentication required
+      if (code === 'authentication_required') {
+        return 'incomplete';
+      }
+    }
+    return 'incomplete';
+  }
+  if (stripeStatus === 'processing') return 'processing';
+  if (stripeStatus === 'succeeded') return 'succeeded';
+  if ([
+    'failed', 'canceled', 'blocked', 'expired'
+  ].includes(stripeStatus)) return stripeStatus;
+  return 'incomplete'; // fallback
+}
+
 // Connect to MongoDB
 const connectDB = async () => {
   try {
@@ -75,17 +115,20 @@ async function fixFailedPayments() {
 
     for (const payment of allPayments) {
       try {
-        console.log(`Checking payment ${payment._id} (Stripe ID: ${payment.stripePaymentIntentId})`);
+        // console.log(`Checking payment ${payment._id} (Stripe ID: ${payment.stripePaymentIntentId})`);
 
         // Get latest status from Stripe
         const paymentIntent = await stripe.paymentIntents.retrieve(payment.stripePaymentIntentId);
 
         // Map Stripe status to display status
-        const displayStatus = getDisplayStatus(paymentIntent.status);
+        const displayStatus = getPreciseDisplayStatus(paymentIntent.status, paymentIntent.last_payment_error);
+
+        // Log both Stripe and system status
+        console.log(`Stripe status for payment ${payment._id}: ${paymentIntent.status} | ${paymentIntent.last_payment_error} | System (DB) status: ${payment.status}`);
 
         // Check if payment status has changed (by display status)
         if (payment.status !== displayStatus) {
-          console.log(`Payment ${payment._id} status changed from ${payment.status} to ${displayStatus} (Stripe: ${paymentIntent.status})`);
+          // console.log(`Payment ${payment._id} status changed from ${payment.status} to ${displayStatus} (Stripe: ${paymentIntent.status})`);
 
           // Update payment status
           payment.status = displayStatus;
@@ -110,7 +153,7 @@ async function fixFailedPayments() {
           await payment.save();
           updatedCount++;
 
-          console.log(`Updated payment ${payment._id} to status: ${displayStatus} (display: ${getDisplayStatus(paymentIntent.status)})`);
+          // console.log(`Updated payment ${payment._id} to status: ${displayStatus} (display: ${getDisplayStatus(paymentIntent.status)})`);
         }
 
         // If Stripe says succeeded but DB is not tokensAdded, add tokens if not already added
@@ -121,7 +164,7 @@ async function fixFailedPayments() {
             payment.tokensScheduledFor = timeRestriction.scheduledTime;
             payment.tokensAdded = false;
             await payment.save();
-            console.log(`Tokens scheduled for ${timeRestriction.scheduledTime.toISOString()} for payment ${payment._id}`);
+            // console.log(`Tokens scheduled for ${timeRestriction.scheduledTime.toISOString()} for payment ${payment._id}`);
           } else {
             await addTokensToBalance(payment);
             tokensAddedCount++;
