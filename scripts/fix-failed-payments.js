@@ -65,35 +65,33 @@ async function fixFailedPayments() {
   try {
     console.log('Starting to fix failed payments...');
 
-    // Find all pending payments that might be failed
-    const pendingPayments = await Payment.find({
-      status: { $in: ['requires_payment_method', 'processing', 'requires_action', 'requires_confirmation', 'requires_capture', 'incomplete'] }
-    });
-
-    console.log(`Found ${pendingPayments.length} pending/processing payments to check`);
+    // Find all payments where the mapped Stripe status does not match the DB status
+    const allPayments = await Payment.find({});
+    console.log(`Found ${allPayments.length} payments to check`);
 
     let updatedCount = 0;
     let errorCount = 0;
     let tokensAddedCount = 0;
 
-    for (const payment of pendingPayments) {
+    for (const payment of allPayments) {
       try {
         console.log(`Checking payment ${payment._id} (Stripe ID: ${payment.stripePaymentIntentId})`);
 
         // Get latest status from Stripe
         const paymentIntent = await stripe.paymentIntents.retrieve(payment.stripePaymentIntentId);
 
-        // Map Stripe status to database status
-        // const dbStatus = mapStripeStatusToDbStatus(paymentIntent.status);
-        // Check if payment status has changed
-        if (payment.status !== paymentIntent.status) {
-          console.log(`Payment ${payment._id} status changed from ${payment.status} to ${paymentIntent.status} (Stripe: ${paymentIntent.status})`);
+        // Map Stripe status to display status
+        const displayStatus = getDisplayStatus(paymentIntent.status);
+
+        // Check if payment status has changed (by display status)
+        if (payment.status !== displayStatus) {
+          console.log(`Payment ${payment._id} status changed from ${payment.status} to ${displayStatus} (Stripe: ${paymentIntent.status})`);
 
           // Update payment status
-          payment.status = getDisplayStatus(paymentIntent.status);
+          payment.status = displayStatus;
 
           // Add error details if payment failed
-          if (paymentIntent.last_payment_error) {
+          if (displayStatus === 'failed' && paymentIntent.last_payment_error) {
             payment.metadata = {
               ...payment.metadata,
               failureReason: paymentIntent.last_payment_error.message,
@@ -112,11 +110,11 @@ async function fixFailedPayments() {
           await payment.save();
           updatedCount++;
 
-          console.log(`Updated payment ${payment._id} to status: ${paymentIntent.status} (display: ${getDisplayStatus(paymentIntent.status)})`);
+          console.log(`Updated payment ${payment._id} to status: ${displayStatus} (display: ${getDisplayStatus(paymentIntent.status)})`);
         }
 
-        // If Stripe says succeeded but DB is pending/processing, add tokens if not already added
-        if (paymentIntent.status === 'succeeded' && !payment.tokensAdded) {
+        // If Stripe says succeeded but DB is not tokensAdded, add tokens if not already added
+        if (displayStatus === 'succeeded' && !payment.tokensAdded) {
           // Check time restrictions
           const timeRestriction = checkTimeRestriction(payment.location);
           if (timeRestriction.shouldDelay && timeRestriction.scheduledTime) {
@@ -136,7 +134,7 @@ async function fixFailedPayments() {
     }
 
     const result = {
-      totalChecked: pendingPayments.length,
+      totalChecked: allPayments.length,
       updated: updatedCount,
       tokensAdded: tokensAddedCount,
       errors: errorCount
