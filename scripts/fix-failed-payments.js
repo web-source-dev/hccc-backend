@@ -33,30 +33,6 @@ async function addTokensToBalance(payment) {
   console.log(`Added ${payment.tokenPackage.tokens} tokens for payment ${payment._id}`);
 }
 
-// Helper function to map Stripe status to database status
-function mapStripeStatusToDbStatus(stripeStatus) {
-  switch (stripeStatus) {
-    case 'succeeded':
-      return 'succeeded';
-    case 'processing':
-      return 'processing';
-    case 'canceled':
-      return 'canceled';
-    case 'requires_payment_method':
-      return 'failed';
-    case 'requires_action':
-      return 'pending';
-    case 'requires_confirmation':
-      return 'pending';
-    case 'requires_capture':
-      return 'pending';
-    case 'expired':
-      return 'expired';
-    default:
-      return 'pending';
-  }
-}
-
 // Connect to MongoDB
 const connectDB = async () => {
   try {
@@ -75,7 +51,7 @@ async function fixFailedPayments() {
 
     // Find all pending payments that might be failed
     const pendingPayments = await Payment.find({
-      status: { $in: ['pending', 'processing'] }
+      status: { $in: ['requires_payment_method', 'processing', 'requires_action', 'requires_confirmation', 'requires_capture', 'incomplete'] }
     });
 
     console.log(`Found ${pendingPayments.length} pending/processing payments to check`);
@@ -92,17 +68,16 @@ async function fixFailedPayments() {
         const paymentIntent = await stripe.paymentIntents.retrieve(payment.stripePaymentIntentId);
 
         // Map Stripe status to database status
-        const dbStatus = mapStripeStatusToDbStatus(paymentIntent.status);
-
+        // const dbStatus = mapStripeStatusToDbStatus(paymentIntent.status);
         // Check if payment status has changed
-        if (payment.status !== dbStatus) {
-          console.log(`Payment ${payment._id} status changed from ${payment.status} to ${dbStatus} (Stripe: ${paymentIntent.status})`);
+        if (payment.status !== paymentIntent.status) {
+          console.log(`Payment ${payment._id} status changed from ${payment.status} to ${paymentIntent.status} (Stripe: ${paymentIntent.status})`);
 
           // Update payment status
-          payment.status = dbStatus;
+          payment.status = paymentIntent.status;
 
           // Add error details if payment failed
-          if (dbStatus === 'failed' && paymentIntent.last_payment_error) {
+          if (paymentIntent.last_payment_error) {
             payment.metadata = {
               ...payment.metadata,
               failureReason: paymentIntent.last_payment_error.message,
@@ -121,7 +96,7 @@ async function fixFailedPayments() {
           await payment.save();
           updatedCount++;
 
-          console.log(`Updated payment ${payment._id} to status: ${dbStatus}`);
+          console.log(`Updated payment ${payment._id} to status: ${paymentIntent.status}`);
         }
 
         // If Stripe says succeeded but DB is pending/processing, add tokens if not already added
@@ -169,7 +144,6 @@ async function fixFailedPayments() {
 module.exports = {
   fixFailedPayments,
   addTokensToBalance,
-  mapStripeStatusToDbStatus,
   connectDB
 };
 

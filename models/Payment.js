@@ -43,8 +43,9 @@ const paymentSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'processing', 'succeeded', 'failed', 'canceled', 'expired'],
-    default: 'pending'
+    // Stores the exact Stripe status (e.g., 'incomplete', 'processing', 'succeeded', 'failed', 'canceled', 'expired', 'requires_payment_method', 'requires_action', 'requires_confirmation', 'requires_capture', 'blocked', etc.)
+    required: true,
+    default: 'incomplete'
   },
   paymentMethod: {
     type: String

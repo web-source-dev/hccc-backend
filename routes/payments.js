@@ -83,7 +83,7 @@ router.post('/create-payment-intent', auth, [
       'tokenPackage.tokens': game.tokenPackages[packageIndex].tokens,
       'tokenPackage.price': game.tokenPackages[packageIndex].price,
       location: locationData.name,
-      status: { $in: ['pending', 'processing'] },
+      status: { $in: ['requires_payment_method', 'processing', 'requires_action', 'requires_confirmation', 'requires_capture', 'incomplete'] },
       createdAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) } // Within last 30 minutes
     });
 
@@ -257,7 +257,7 @@ router.post('/confirm-payment', auth, [
     }
 
     // Update payment status based on Stripe status
-    const status = mapStripeStatusToDbStatus(paymentIntent.status);
+    const status = paymentIntent.status;
 
     // Always update if status has changed
     if (payment.status !== status) {
@@ -332,30 +332,6 @@ router.post('/confirm-payment', auth, [
     });
   }
 });
-
-// Helper function to map Stripe status to database status
-function mapStripeStatusToDbStatus(stripeStatus) {
-  switch (stripeStatus) {
-    case 'succeeded':
-      return 'succeeded';
-    case 'processing':
-      return 'processing';
-    case 'canceled':
-      return 'canceled';
-    case 'requires_payment_method':
-      return 'failed';
-    case 'requires_action':
-      return 'pending';
-    case 'requires_confirmation':
-      return 'pending';
-    case 'requires_capture':
-      return 'pending';
-    case 'expired':
-      return 'expired';
-    default:
-      return 'pending';
-  }
-}
 
 // Helper function to add tokens to balance
 async function addTokensToBalance(payment) {
@@ -553,7 +529,7 @@ router.get('/by-intent/:paymentIntentId', auth, async (req, res) => {
         const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
         
         // Update payment status if it has changed
-        const dbStatus = mapStripeStatusToDbStatus(paymentIntent.status);
+        const dbStatus = paymentIntent.status;
         if (payment.status !== dbStatus) {
           payment.status = dbStatus;
           
@@ -640,7 +616,7 @@ router.post('/check-status', auth, [
     }
 
     // Update payment status if it has changed
-    const status = mapStripeStatusToDbStatus(paymentIntent.status);
+    const status = paymentIntent.status;
 
     if (payment.status !== status) {
       payment.status = status;
@@ -745,8 +721,8 @@ router.get('/admin/stats', adminAuth, async (req, res) => {
   try {
     const totalPayments = await Payment.countDocuments();
     const successfulPayments = await Payment.countDocuments({ status: 'succeeded' });
-    const pendingPayments = await Payment.countDocuments({ status: 'pending' });
-    const failedPayments = await Payment.countDocuments({ status: 'failed' });
+    const pendingPayments = await Payment.countDocuments({ status: { $in: ['requires_payment_method', 'processing', 'requires_action', 'requires_confirmation', 'requires_capture', 'incomplete'] } });
+    const failedPayments = await Payment.countDocuments({ status: { $in: ['failed', 'canceled', 'blocked', 'expired'] } });
 
     // Calculate total revenue
     const revenueResult = await Payment.aggregate([

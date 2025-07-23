@@ -56,6 +56,7 @@ class CronService {
 
       // Find payments that are scheduled for token addition and haven't been processed yet
       // Only process payments that were scheduled during closing hours
+      // status: 'succeeded' is a Stripe status value
       const scheduledPayments = await Payment.find({
         status: 'succeeded',
         location: location,
