@@ -273,7 +273,7 @@ router.post('/confirm-payment', auth, [
     }
 
     // Update payment status based on Stripe status
-    const status = paymentIntent.status;
+    const status = getDisplayStatus(paymentIntent.status);
 
     // Always update if status has changed
     if (payment.status !== status) {
@@ -632,7 +632,7 @@ router.post('/check-status', auth, [
     }
 
     // Update payment status if it has changed
-    const status = paymentIntent.status;
+    const status = getDisplayStatus(paymentIntent.status);
 
     if (payment.status !== status) {
       payment.status = status;

@@ -90,7 +90,7 @@ async function fixFailedPayments() {
           console.log(`Payment ${payment._id} status changed from ${payment.status} to ${paymentIntent.status} (Stripe: ${paymentIntent.status})`);
 
           // Update payment status
-          payment.status = paymentIntent.status;
+          payment.status = getDisplayStatus(paymentIntent.status);
 
           // Add error details if payment failed
           if (paymentIntent.last_payment_error) {
