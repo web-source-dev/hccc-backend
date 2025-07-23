@@ -19,7 +19,7 @@ class CronService {
     console.log('Initializing cron service...');
 
     // Fix failed payments every 10 minutes
-    cron.schedule('*/3 * * * *', async () => {
+    cron.schedule('*/5 * * * *', async () => {
       console.log(`[${new Date().toISOString()}] Running fix failed payments check...`);
       try {
         const result = await fixFailedPayments();
@@ -170,7 +170,7 @@ class CronService {
     return {
       isInitialized: this.isInitialized,
       jobs: {
-        fixFailedPayments: '*/3 * * * * (every 3 minutes)',
+        fixFailedPayments: '*/5 * * * * (every 5 minutes)',
         cedarPark: '0 17 * * * (11:00 AM Texas time)',
         libertyHill: '0 16 * * * (10:00 AM Texas time)',
       }
