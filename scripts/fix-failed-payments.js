@@ -103,11 +103,9 @@ const connectDB = async () => {
 // Fix failed payments by syncing with Stripe
 async function fixFailedPayments() {
   try {
-    console.log('Starting to fix failed payments...');
 
     // Find all payments where the mapped Stripe status does not match the DB status
     const allPayments = await Payment.find({});
-    console.log(`Found ${allPayments.length} payments to check`);
 
     let updatedCount = 0;
     let errorCount = 0;
@@ -124,7 +122,7 @@ async function fixFailedPayments() {
         const displayStatus = getPreciseDisplayStatus(paymentIntent.status, paymentIntent.last_payment_error);
 
         // Log both Stripe and system status
-        console.log(`Stripe status for payment ${payment._id}: ${paymentIntent.status} | ${paymentIntent.last_payment_error} | System (DB) status: ${payment.status}`);
+        // console.log(`Stripe status for payment ${payment._id}: ${paymentIntent.status} | ${paymentIntent.last_payment_error} | System (DB) status: ${payment.status}`);
 
         // Check if payment status has changed (by display status)
         if (payment.status !== displayStatus) {
