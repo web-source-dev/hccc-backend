@@ -25,13 +25,12 @@ const paymentSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  stripePaymentIntentId: {
+  paypalOrderId: {
     type: String,
     required: true
   },
-  stripeClientSecret: {
-    type: String,
-    required: true
+  paypalPaymentId: {
+    type: String
   },
   amount: {
     type: Number,
@@ -39,16 +38,17 @@ const paymentSchema = new mongoose.Schema({
   },
   currency: {
     type: String,
-    default: 'usd'
+    default: 'USD'
   },
   status: {
     type: String,
-    // Stores the exact Stripe status (e.g., 'incomplete', 'processing', 'succeeded', 'failed', 'canceled', 'expired', 'requires_payment_method', 'requires_action', 'requires_confirmation', 'requires_capture', 'blocked', etc.)
+    // PayPal statuses: 'CREATED', 'SAVED', 'APPROVED', 'VOIDED', 'COMPLETED', 'PAYER_ACTION_REQUIRED'
     required: true,
-    default: 'incomplete'
+    default: 'CREATED'
   },
   paymentMethod: {
-    type: String
+    type: String,
+    default: 'paypal'
   },
   receiptUrl: {
     type: String
@@ -71,7 +71,6 @@ const paymentSchema = new mongoose.Schema({
     // Error tracking fields
     failureReason: String,
     errorCode: String,
-    declineCode: String,
     errorType: String,
     failedAt: String,
     // Action tracking fields
@@ -84,8 +83,9 @@ const paymentSchema = new mongoose.Schema({
     disputeAmount: Number,
     disputeStatus: String,
     disputedAt: String,
-    // Charge tracking
-    chargeId: String
+    // PayPal specific fields
+    paypalIntent: String,
+    paypalCaptureId: String
   }
 }, {
   timestamps: true
@@ -93,7 +93,7 @@ const paymentSchema = new mongoose.Schema({
 
 // Index for better query performance
 paymentSchema.index({ user: 1, status: 1, createdAt: -1 });
-paymentSchema.index({ stripePaymentIntentId: 1 }, { unique: true });
+paymentSchema.index({ paypalOrderId: 1 }, { unique: true });
 paymentSchema.index({ user: 1, game: 1, 'tokenPackage.tokens': 1, 'tokenPackage.price': 1, location: 1, status: 1 });
 
 module.exports = mongoose.model('Payment', paymentSchema); 

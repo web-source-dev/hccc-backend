@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const Payment = require('../models/Payment');
 const TokenBalance = require('../models/TokenBalance');
 const { sendEmail } = require('../utils/email');
-const { fixFailedPayments } = require('../scripts/fix-failed-payments');
+// const { fixFailedPayments } = require('../scripts/fix-failed-payments');
 
 class CronService {
   constructor() {
@@ -22,8 +22,8 @@ class CronService {
     cron.schedule('*/5 * * * *', async () => {
       console.log(`[${new Date().toISOString()}] Running fix failed payments check...`);
       try {
-        const result = await fixFailedPayments();
-        console.log(`[${new Date().toISOString()}] Fix failed payments completed:`, result);
+        // const result = await fixFailedPayments();
+        // console.log(`[${new Date().toISOString()}] Fix failed payments completed:`, result);
       } catch (error) {
         console.error(`[${new Date().toISOString()}] Error in fix failed payments:`, error);
       }

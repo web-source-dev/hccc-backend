@@ -1,0 +1,73 @@
+import { __extends, __awaiter, __generator } from 'tslib';
+import JSONBig from '@apimatic/json-bigint';
+import { convertFromStream } from '@apimatic/convert-to-stream';
+
+/**
+ * Thrown when the HTTP status code is not okay.
+ *
+ * The ApiError extends the ApiResponse interface, so all ApiResponse
+ * properties are available.
+ */
+var ApiError =
+/*#__PURE__*/
+/** @class */
+function (_super) {
+  __extends(ApiError, _super);
+  function ApiError(context, message) {
+    var _newTarget = this.constructor;
+    var _this = _super.call(this, message) || this;
+    Object.setPrototypeOf(_this, _newTarget.prototype);
+    var request = context.request,
+      response = context.response;
+    _this.request = request;
+    _this.statusCode = response.statusCode;
+    _this.headers = response.headers;
+    _this.body = response.body;
+    return _this;
+  }
+  return ApiError;
+}(Error);
+function loadResult(error) {
+  return __awaiter(this, void 0, void 0, function () {
+    var _a, error_1;
+    return __generator(this, function (_b) {
+      switch (_b.label) {
+        case 0:
+          _b.trys.push([0, 2,, 3]);
+          _a = error;
+          return [4 /*yield*/, parseBody(error.body)];
+        case 1:
+          _a.result = _b.sent();
+          return [3 /*break*/, 3];
+        case 2:
+          error_1 = _b.sent();
+          if (process.env.NODE_ENV !== 'production' && console) {
+            // tslint:disable-next-line:no-console
+            console.warn("Unexpected error: Could not parse HTTP response body. ".concat(error_1.message));
+          }
+          return [3 /*break*/, 3];
+        case 3:
+          return [2 /*return*/];
+      }
+    });
+  });
+}
+function parseBody(body) {
+  return __awaiter(this, void 0, void 0, function () {
+    var jsonString, jsonBig;
+    return __generator(this, function (_a) {
+      switch (_a.label) {
+        case 0:
+          return [4 /*yield*/, convertFromStream(body)];
+        case 1:
+          jsonString = _a.sent();
+          if (body === '') {
+            return [2 /*return*/, undefined];
+          }
+          jsonBig = JSONBig();
+          return [2 /*return*/, jsonBig.parse(jsonString)];
+      }
+    });
+  });
+}
+export { ApiError, loadResult };
