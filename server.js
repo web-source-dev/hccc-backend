@@ -17,7 +17,7 @@ const app = express();
 // Set trust proxy for correct client IP detection behind proxies (Render, Vercel, Heroku, etc.)
 app.set('trust proxy', 1);
 
-// --- PAYPAL WEBHOOK ROUTE FIRST: must be before any other middleware ---
+// --- STRIPE WEBHOOK ROUTE FIRST: must be before any other middleware ---
 app.use('/api/payments/webhook', bodyParser.raw({ type: 'application/json' }));
 
 // Security middleware
