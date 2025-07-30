@@ -22,7 +22,8 @@
     "multer": "^2.0.1",
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.5",
-    "stripe": "^14.10.0"
+    "@paypal/paypal-server-sdk": "^1.0.3",
+    "axios": "^1.6.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

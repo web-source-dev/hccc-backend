@@ -25,13 +25,12 @@ const paymentSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  stripePaymentIntentId: {
+  paypalOrderId: {
     type: String,
     required: true
   },
-  stripeClientSecret: {
-    type: String,
-    required: true
+  paypalPayerId: {
+    type: String
   },
   amount: {
     type: Number,
@@ -93,7 +92,7 @@ const paymentSchema = new mongoose.Schema({
 
 // Index for better query performance
 paymentSchema.index({ user: 1, status: 1, createdAt: -1 });
-paymentSchema.index({ stripePaymentIntentId: 1 }, { unique: true });
+paymentSchema.index({ paypalOrderId: 1 }, { unique: true });
 paymentSchema.index({ user: 1, game: 1, 'tokenPackage.tokens': 1, 'tokenPackage.price': 1, location: 1, status: 1 });
 
 module.exports = mongoose.model('Payment', paymentSchema); 
