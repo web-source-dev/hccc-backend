@@ -6,9 +6,102 @@ const TokenBalance = require('../models/TokenBalance');
 const { auth, adminAuth } = require('../middleware/auth');
 const { sendEmail } = require('../utils/email');
 const { getTimeRestrictionInfo, checkTimeRestriction } = require('../utils/timeRestrictions');
-const { createOrder, captureOrder, getOrder } = require('../services/paypalService');
+const { createOrder, captureOrder, getOrder, verifyWebhookSignature, mapPayPalStatus, validateWebhookEvent } = require('../services/paypalService');
 
 const router = express.Router();
+
+// Helper function to assess payment risk
+function assessPaymentRisk(payment, req) {
+  const riskFactors = [];
+  let riskLevel = 'low';
+
+  // Check for high-value transactions
+  if (payment.amount > 100) {
+    riskFactors.push('high_value');
+    riskLevel = 'medium';
+  }
+
+  // Check for rapid successive payments
+  // This would need to be implemented with additional queries
+
+  // Check for unusual IP patterns
+  const clientIP = req.ip || req.connection.remoteAddress;
+  if (clientIP) {
+    payment.metadata.ipAddress = clientIP;
+  }
+
+  // Check user agent
+  const userAgent = req.get('User-Agent');
+  if (userAgent) {
+    payment.metadata.userAgent = userAgent;
+  }
+
+  // Check for new user (first payment)
+  // This would need to be implemented with additional queries
+
+  payment.metadata.riskLevel = riskLevel;
+  payment.metadata.riskFactors = riskFactors;
+
+  return { riskLevel, riskFactors };
+}
+
+// Helper function to get user-friendly error message
+function getUserFriendlyError(error) {
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  // PayPal specific errors
+  if (error.response?.data?.details?.[0]?.issue) {
+    const issue = error.response.data.details[0].issue;
+    const issueMap = {
+      'INVALID_REQUEST': 'Invalid payment request. Please check your details and try again.',
+      'ORDER_NOT_APPROVED': 'Payment was not approved. Please try again.',
+      'ORDER_ALREADY_CAPTURED': 'Payment has already been processed.',
+      'ORDER_EXPIRED': 'Payment order has expired. Please create a new order.',
+      'PAYER_ACCOUNT_LOCKED_OR_CLOSED': 'PayPal account is locked or closed. Please use a different payment method.',
+      'PAYER_ACCOUNT_RESTRICTED': 'PayPal account is restricted. Please use a different payment method.',
+      'PAYER_CANNOT_PAY': 'Unable to process payment with this PayPal account. Please try a different method.',
+      'PAYER_COUNTRY_NOT_SUPPORTED': 'PayPal payments from your country are not supported.',
+      'PAYER_ACCOUNT_NOT_VERIFIED': 'PayPal account is not verified. Please verify your account or use a different method.',
+      'INSUFFICIENT_FUNDS': 'Insufficient funds in PayPal account. Please add funds or use a different payment method.',
+      'CURRENCY_NOT_SUPPORTED': 'Currency not supported. Please try again with USD.',
+      'AMOUNT_TOO_LARGE': 'Payment amount is too large. Please contact support.',
+      'AMOUNT_TOO_SMALL': 'Payment amount is too small. Please try a larger amount.'
+    };
+    return issueMap[issue] || 'Payment processing error. Please try again.';
+  }
+
+  // Network errors
+  if (error.code === 'ECONNABORTED') {
+    return 'Payment service timeout. Please try again.';
+  }
+  if (error.code === 'ENOTFOUND') {
+    return 'Unable to connect to payment service. Please check your internet connection.';
+  }
+
+  // HTTP status errors
+  if (error.response?.status === 400) {
+    return 'Invalid payment request. Please check your details and try again.';
+  }
+  if (error.response?.status === 401) {
+    return 'Payment service authentication failed. Please try again later.';
+  }
+  if (error.response?.status === 403) {
+    return 'Payment request was denied. Please contact support if this persists.';
+  }
+  if (error.response?.status === 404) {
+    return 'Payment order not found. Please try again.';
+  }
+  if (error.response?.status === 409) {
+    return 'Payment is being processed. Please wait a moment and try again.';
+  }
+  if (error.response?.status >= 500) {
+    return 'Payment service is temporarily unavailable. Please try again later.';
+  }
+
+  return 'An unexpected error occurred. Please try again later.';
+}
 
 // Helper function to map PayPal status to display status
 function getDisplayStatus(paypalStatus) {
@@ -48,8 +141,8 @@ router.post('/create-order', auth, [
     if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
-        message: 'Validation failed',
-        errors: errors.array()
+        message: 'Please check your input and try again.',
+        errors: errors.array().map(err => err.msg)
       });
     }
 
@@ -60,7 +153,7 @@ router.post('/create-order', auth, [
     if (!game) {
       return res.status(404).json({
         success: false,
-        message: 'Game not found'
+        message: 'Game not found. Please try again.'
       });
     }
 
@@ -68,7 +161,7 @@ router.post('/create-order', auth, [
     if (game.status !== 'active') {
       return res.status(400).json({
         success: false,
-        message: 'Game is not available for purchase'
+        message: 'This game is currently unavailable for purchase.'
       });
     }
 
@@ -77,7 +170,7 @@ router.post('/create-order', auth, [
     if (!tokenPackage) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid token package'
+        message: 'Invalid token package selected. Please try again.'
       });
     }
 
@@ -88,7 +181,7 @@ router.post('/create-order', auth, [
     if (!locationData || !locationData.available) {
       return res.status(400).json({
         success: false,
-        message: 'Location is not available'
+        message: 'Selected location is not available. Please choose a different location.'
       });
     }
 
@@ -107,7 +200,7 @@ router.post('/create-order', auth, [
       // Check if the existing order is still valid
       try {
         const orderResult = await getOrder(existingPayment.paypalOrderId);
-        if (orderResult.success && orderResult.order.status === 'CREATED') {
+        if (orderResult.success && ['CREATED', 'SAVED'].includes(orderResult.order.status)) {
           // Return existing order if it's still valid
           return res.json({
             success: true,
@@ -118,18 +211,17 @@ router.post('/create-order', auth, [
           });
         } else {
           // Mark as expired if order is no longer valid
+          existingPayment.paypalStatus = 'EXPIRED';
           existingPayment.status = 'expired';
           await existingPayment.save();
         }
       } catch (error) {
         // If we can't retrieve the order, mark as expired
+        existingPayment.paypalStatus = 'EXPIRED';
         existingPayment.status = 'expired';
         await existingPayment.save();
       }
     }
-
-    // Check if payment is made during closing hours (Texas time)
-    const timeRestriction = getTimeRestrictionInfo(locationData.name);
 
     // Create PayPal order
     const orderResult = await createOrder(
@@ -141,7 +233,7 @@ router.post('/create-order', auth, [
     if (!orderResult.success) {
       return res.status(500).json({
         success: false,
-        message: 'Failed to create PayPal order'
+        message: orderResult.error || 'Unable to create payment order. Please try again later.'
       });
     }
 
@@ -156,15 +248,19 @@ router.post('/create-order', auth, [
       location: locationData.name,
       paypalOrderId: orderResult.orderId,
       amount: tokenPackage.price,
+      paypalStatus: 'CREATED',
       status: 'incomplete',
       metadata: {
         gameName: game.name,
         userFirstname: req.user.firstname,
         userLastname: req.user.lastname,
         userEmail: req.user.email,
-        timeRestriction: timeRestriction ? JSON.stringify(timeRestriction) : ''
+        timeRestriction: getTimeRestrictionInfo(locationData.name) ? JSON.stringify(getTimeRestrictionInfo(locationData.name)) : ''
       }
     });
+
+    // Assess payment risk
+    assessPaymentRisk(payment, req);
 
     await payment.save();
 
@@ -178,9 +274,10 @@ router.post('/create-order', auth, [
 
   } catch (error) {
     console.error('Create PayPal order error:', error);
+    const userMessage = getUserFriendlyError(error);
     res.status(500).json({
       success: false,
-      message: 'Failed to create PayPal order'
+      message: userMessage
     });
   }
 });
@@ -199,8 +296,8 @@ router.post('/capture-order', auth, [
     if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
-        message: 'Validation failed',
-        errors: errors.array()
+        message: 'Please provide a valid order ID.',
+        errors: errors.array().map(err => err.msg)
       });
     }
 
@@ -215,7 +312,7 @@ router.post('/capture-order', auth, [
     if (!payment) {
       return res.status(404).json({
         success: false,
-        message: 'Payment record not found'
+        message: 'Payment record not found. Please try again.'
       });
     }
 
@@ -225,7 +322,7 @@ router.post('/capture-order', auth, [
         success: true,
         data: {
           payment,
-          status: 'succeeded'
+          status: payment.paypalStatus
         }
       });
     }
@@ -236,25 +333,36 @@ router.post('/capture-order', auth, [
     if (!captureResult.success) {
       return res.status(500).json({
         success: false,
-        message: 'Failed to capture PayPal order',
-        error: captureResult.error
+        message: captureResult.error || 'Unable to process payment. Please try again later.'
       });
     }
 
     // Update payment status based on PayPal status
-    const status = getDisplayStatus(captureResult.status);
+    const paypalStatus = captureResult.status;
+    const internalStatus = mapPayPalStatus(paypalStatus);
 
     // Always update if status has changed
-    if (payment.status !== status) {
-      payment.status = status;
+    if (payment.paypalStatus !== paypalStatus) {
+      payment.paypalStatus = paypalStatus;
+      payment.status = internalStatus;
       payment.paypalPayerId = captureResult.payerId;
       payment.paymentMethod = 'paypal';
+      
+      // Store additional PayPal data
+      if (captureResult.capture) {
+        payment.metadata.paypalCaptureId = captureResult.capture.id;
+        payment.metadata.paypalTransactionId = captureResult.capture.id;
+        if (captureResult.capture.seller_receivable_breakdown) {
+          payment.metadata.paypalFee = parseFloat(captureResult.capture.seller_receivable_breakdown.paypal_fee?.value || 0);
+          payment.metadata.paypalNetAmount = parseFloat(captureResult.capture.seller_receivable_breakdown.net_amount?.value || 0);
+        }
+      }
       
       await payment.save();
     }
 
     // If payment succeeded, check time restrictions before adding tokens
-    if (status === 'succeeded' && !payment.tokensAdded) {
+    if (internalStatus === 'succeeded' && !payment.tokensAdded) {
       try {
         // Check if payment was made during closing hours (Texas time)
         const timeRestriction = checkTimeRestriction(payment.location);
@@ -277,13 +385,13 @@ router.post('/capture-order', auth, [
     }
 
     // Return appropriate response based on status
-    if (status === 'failed') {
+    if (internalStatus === 'failed') {
       return res.status(400).json({
         success: false,
-        message: 'Payment failed',
+        message: 'Payment failed. Please try again or contact support if you were charged.',
         data: {
           payment,
-          status: captureResult.status
+          status: paypalStatus
         }
       });
     }
@@ -292,15 +400,16 @@ router.post('/capture-order', auth, [
       success: true,
       data: {
         payment,
-        status: captureResult.status
+        status: paypalStatus
       }
     });
 
   } catch (error) {
     console.error('Capture PayPal order error:', error);
+    const userMessage = getUserFriendlyError(error);
     res.status(500).json({
       success: false,
-      message: 'Failed to capture PayPal order'
+      message: userMessage
     });
   }
 });
@@ -624,8 +733,29 @@ router.get('/admin/stats', adminAuth, async (req, res) => {
 router.post('/webhook', async (req, res) => {
   try {
     const event = req.body;
-    console.log(`Processing PayPal webhook event: ${event.event_type}`);
+    
+    // Validate webhook event
+    if (!validateWebhookEvent(event)) {
+      console.error(`Invalid webhook event type: ${event.event_type}`);
+      return res.status(400).json({ error: 'Invalid event type' });
+    }
 
+    // Verify webhook signature in production
+    if (process.env.NODE_ENV === 'production') {
+      const webhookId = process.env.PAYPAL_WEBHOOK_ID;
+      if (!verifyWebhookSignature(req.headers, req.body, webhookId)) {
+        console.error('Webhook signature verification failed');
+        return res.status(401).json({ error: 'Invalid signature' });
+      }
+    }
+
+    console.log(`Processing PayPal webhook event: ${event.event_type}`, {
+      eventId: event.id,
+      resourceType: event.resource_type,
+      resourceId: event.resource?.id
+    });
+
+    // Process the webhook event
     switch (event.event_type) {
       case 'PAYMENT.CAPTURE.COMPLETED':
         await handlePaymentCompleted(event.resource);
@@ -643,12 +773,28 @@ router.post('/webhook', async (req, res) => {
         await handlePaymentRefunded(event.resource);
         break;
 
+      case 'PAYMENT.CAPTURE.VOIDED':
+        await handlePaymentVoided(event.resource);
+        break;
+
+      case 'PAYMENT.CAPTURE.FAILED':
+        await handlePaymentFailed(event.resource);
+        break;
+
       case 'CHECKOUT.ORDER.APPROVED':
         await handleOrderApproved(event.resource);
         break;
 
       case 'CHECKOUT.ORDER.CANCELED':
         await handleOrderCanceled(event.resource);
+        break;
+
+      case 'CHECKOUT.ORDER.COMPLETED':
+        await handleOrderCompleted(event.resource);
+        break;
+
+      case 'CHECKOUT.ORDER.PROCESSED':
+        await handleOrderProcessed(event.resource);
         break;
 
       default:
@@ -675,15 +821,25 @@ async function handlePaymentCompleted(capture) {
     return;
   }
 
-  if (payment.status === 'succeeded') {
-    console.log(`Payment ${payment._id} already marked as succeeded`);
+  if (payment.paypalStatus === 'CAPTURE_COMPLETED') {
+    console.log(`Payment ${payment._id} already marked as completed`);
     return;
   }
 
   // Update payment status
+  payment.paypalStatus = 'CAPTURE_COMPLETED';
   payment.status = 'succeeded';
   payment.paypalPayerId = capture.payer_id;
   payment.paymentMethod = 'paypal';
+  
+  // Store additional PayPal data
+  payment.metadata.paypalCaptureId = capture.id;
+  payment.metadata.paypalTransactionId = capture.id;
+  if (capture.seller_receivable_breakdown) {
+    payment.metadata.paypalFee = parseFloat(capture.seller_receivable_breakdown.paypal_fee?.value || 0);
+    payment.metadata.paypalNetAmount = parseFloat(capture.seller_receivable_breakdown.net_amount?.value || 0);
+  }
+  
   await payment.save();
 
   console.log(`Payment ${payment._id} marked as succeeded`);
@@ -724,11 +880,13 @@ async function handlePaymentDenied(capture) {
     return;
   }
 
+  payment.paypalStatus = 'CAPTURE_DENIED';
   payment.status = 'failed';
   payment.metadata = {
     ...payment.metadata,
     failureReason: capture.status_details?.reason || 'Payment denied',
-    failedAt: new Date().toISOString()
+    failedAt: new Date().toISOString(),
+    errorCode: capture.status_details?.reason || 'DENIED'
   };
   await payment.save();
 
@@ -748,6 +906,7 @@ async function handlePaymentPending(capture) {
     return;
   }
 
+  payment.paypalStatus = 'CAPTURE_PENDING';
   payment.status = 'processing';
   await payment.save();
 
@@ -767,6 +926,7 @@ async function handlePaymentRefunded(capture) {
     return;
   }
 
+  payment.paypalStatus = 'CAPTURE_REFUNDED';
   payment.status = 'refunded';
   payment.metadata = {
     ...payment.metadata,
@@ -810,6 +970,7 @@ async function handleOrderCanceled(order) {
     return;
   }
 
+  payment.paypalStatus = 'VOIDED';
   payment.status = 'canceled';
   payment.metadata = {
     ...payment.metadata,
@@ -819,6 +980,97 @@ async function handleOrderCanceled(order) {
   await payment.save();
 
   console.log(`Payment ${payment._id} marked as canceled`);
+}
+
+// Helper function to handle voided payments
+async function handlePaymentVoided(capture) {
+  console.log(`Processing voided payment: ${capture.id}`);
+  
+  const payment = await Payment.findOne({
+    paypalOrderId: capture.custom_id?.split('_')[0] || capture.id
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for voided payment: ${capture.id}`);
+    return;
+  }
+
+  payment.paypalStatus = 'CAPTURE_VOIDED';
+  payment.status = 'canceled';
+  payment.metadata = {
+    ...payment.metadata,
+    canceledAt: new Date().toISOString(),
+    cancellationReason: 'payment_voided'
+  };
+  await payment.save();
+
+  console.log(`Payment ${payment._id} marked as voided`);
+}
+
+// Helper function to handle failed payments
+async function handlePaymentFailed(capture) {
+  console.log(`Processing failed payment: ${capture.id}`);
+  
+  const payment = await Payment.findOne({
+    paypalOrderId: capture.custom_id?.split('_')[0] || capture.id
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for failed payment: ${capture.id}`);
+    return;
+  }
+
+  payment.paypalStatus = 'CAPTURE_FAILED';
+  payment.status = 'failed';
+  payment.metadata = {
+    ...payment.metadata,
+    failureReason: capture.status_details?.reason || 'Payment failed',
+    failedAt: new Date().toISOString(),
+    errorCode: capture.status_details?.reason || 'FAILED'
+  };
+  await payment.save();
+
+  console.log(`Payment ${payment._id} marked as failed`);
+}
+
+// Helper function to handle completed orders
+async function handleOrderCompleted(order) {
+  console.log(`Processing completed order: ${order.id}`);
+  
+  const payment = await Payment.findOne({
+    paypalOrderId: order.id
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for completed order: ${order.id}`);
+    return;
+  }
+
+  payment.paypalStatus = 'COMPLETED';
+  payment.status = 'succeeded';
+  await payment.save();
+
+  console.log(`Payment ${payment._id} marked as completed`);
+}
+
+// Helper function to handle processed orders
+async function handleOrderProcessed(order) {
+  console.log(`Processing processed order: ${order.id}`);
+  
+  const payment = await Payment.findOne({
+    paypalOrderId: order.id
+  });
+
+  if (!payment) {
+    console.error(`Payment record not found for processed order: ${order.id}`);
+    return;
+  }
+
+  payment.paypalStatus = 'APPROVED';
+  payment.status = 'processing';
+  await payment.save();
+
+  console.log(`Payment ${payment._id} marked as processed`);
 }
 
 module.exports = router; 
