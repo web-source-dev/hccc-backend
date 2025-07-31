@@ -313,6 +313,7 @@ module.exports = {
   createOrder,
   captureOrder,
   getOrder,
+  getAccessToken,
   verifyWebhookSignature,
   mapPayPalStatus,
   validateWebhookEvent

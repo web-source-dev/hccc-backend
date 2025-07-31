@@ -274,6 +274,13 @@ router.post('/create-order', auth, [
 
   } catch (error) {
     console.error('Create PayPal order error:', error);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      response: error.response?.data,
+      status: error.response?.status
+    });
+    
     const userMessage = getUserFriendlyError(error);
     res.status(500).json({
       success: false,
@@ -723,6 +730,47 @@ router.get('/admin/stats', adminAuth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch payment statistics'
+    });
+  }
+});
+
+// @route   GET /api/payments/debug-config
+// @desc    Debug PayPal configuration (admin only)
+// @access  Private (Admin)
+router.get('/debug-config', adminAuth, async (req, res) => {
+  try {
+    const config = {
+      environment: process.env.NODE_ENV,
+      paypalBaseUrl: process.env.NODE_ENV === 'production' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com',
+      hasClientId: !!process.env.PAYPAL_CLIENT_ID,
+      hasClientSecret: !!process.env.PAYPAL_CLIENT_SECRET,
+      hasWebhookId: !!process.env.PAYPAL_WEBHOOK_ID,
+      frontendUrl: process.env.FRONTEND_URL,
+      clientIdLength: process.env.PAYPAL_CLIENT_ID ? process.env.PAYPAL_CLIENT_ID.length : 0,
+      clientSecretLength: process.env.PAYPAL_CLIENT_SECRET ? process.env.PAYPAL_CLIENT_SECRET.length : 0
+    };
+
+    // Test PayPal connection
+    try {
+      const { getAccessToken } = require('../services/paypalService');
+      const token = await getAccessToken();
+      config.paypalConnection = 'success';
+      config.tokenLength = token ? token.length : 0;
+    } catch (error) {
+      config.paypalConnection = 'failed';
+      config.paypalError = error.message;
+    }
+
+    res.json({
+      success: true,
+      data: config
+    });
+
+  } catch (error) {
+    console.error('Debug config error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get debug configuration'
     });
   }
 });
