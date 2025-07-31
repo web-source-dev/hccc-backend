@@ -136,9 +136,26 @@ router.post('/create-order', auth, [
     .withMessage('Location is required')
 ], async (req, res) => {
   try {
+    // Debug logging
+    console.log('🔍 Create order request received:', {
+      gameId: req.body.gameId,
+      packageIndex: req.body.packageIndex,
+      location: req.body.location,
+      userId: req.user.id
+    });
+
+    console.log('🔍 Environment check:', {
+      NODE_ENV: process.env.NODE_ENV,
+      hasPayPalClientId: !!process.env.PAYPAL_CLIENT_ID,
+      hasPayPalClientSecret: !!process.env.PAYPAL_CLIENT_SECRET,
+      hasFrontendUrl: !!process.env.FRONTEND_URL,
+      frontendUrl: process.env.FRONTEND_URL
+    });
+
     // Check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('❌ Validation errors:', errors.array());
       return res.status(400).json({
         success: false,
         message: 'Please check your input and try again.',
@@ -149,8 +166,10 @@ router.post('/create-order', auth, [
     const { gameId, packageIndex, location } = req.body;
 
     // Get the game
+    console.log('🔍 Fetching game:', gameId);
     const game = await Game.findById(gameId);
     if (!game) {
+      console.log('❌ Game not found:', gameId);
       return res.status(404).json({
         success: false,
         message: 'Game not found. Please try again.'
@@ -159,6 +178,7 @@ router.post('/create-order', auth, [
 
     // Check if game is active
     if (game.status !== 'active') {
+      console.log('❌ Game not active:', game.status);
       return res.status(400).json({
         success: false,
         message: 'This game is currently unavailable for purchase.'
@@ -168,6 +188,7 @@ router.post('/create-order', auth, [
     // Get the token package
     const tokenPackage = game.tokenPackages[packageIndex];
     if (!tokenPackage) {
+      console.log('❌ Invalid package index:', packageIndex);
       return res.status(400).json({
         success: false,
         message: 'Invalid token package selected. Please try again.'
@@ -179,6 +200,7 @@ router.post('/create-order', auth, [
       loc.name.toLowerCase().replace(/\s+/g, '-') === location.toLowerCase().replace(/\s+/g, '-')
     );
     if (!locationData || !locationData.available) {
+      console.log('❌ Location not available:', location);
       return res.status(400).json({
         success: false,
         message: 'Selected location is not available. Please choose a different location.'
@@ -197,11 +219,13 @@ router.post('/create-order', auth, [
     });
 
     if (existingPayment) {
+      console.log('🔍 Found existing payment:', existingPayment._id);
       // Check if the existing order is still valid
       try {
         const orderResult = await getOrder(existingPayment.paypalOrderId);
         if (orderResult.success && ['CREATED', 'SAVED'].includes(orderResult.order.status)) {
           // Return existing order if it's still valid
+          console.log('✅ Returning existing order:', existingPayment.paypalOrderId);
           return res.json({
             success: true,
             data: {
@@ -211,12 +235,14 @@ router.post('/create-order', auth, [
           });
         } else {
           // Mark as expired if order is no longer valid
+          console.log('❌ Marking existing order as expired');
           existingPayment.paypalStatus = 'EXPIRED';
           existingPayment.status = 'expired';
           await existingPayment.save();
         }
       } catch (error) {
         // If we can't retrieve the order, mark as expired
+        console.log('❌ Error checking existing order, marking as expired');
         existingPayment.paypalStatus = 'EXPIRED';
         existingPayment.status = 'expired';
         await existingPayment.save();
@@ -224,6 +250,7 @@ router.post('/create-order', auth, [
     }
 
     // Create PayPal order
+    console.log('🔍 Creating PayPal order for amount:', tokenPackage.price);
     const orderResult = await createOrder(
       tokenPackage.price,
       'USD',
@@ -231,11 +258,14 @@ router.post('/create-order', auth, [
     );
 
     if (!orderResult.success) {
+      console.log('❌ PayPal order creation failed:', orderResult.error);
       return res.status(500).json({
         success: false,
         message: orderResult.error || 'Unable to create payment order. Please try again later.'
       });
     }
+
+    console.log('✅ PayPal order created:', orderResult.orderId);
 
     // Create payment record
     const payment = new Payment({
@@ -263,6 +293,7 @@ router.post('/create-order', auth, [
     assessPaymentRisk(payment, req);
 
     await payment.save();
+    console.log('✅ Payment record saved:', payment._id);
 
     res.json({
       success: true,
@@ -273,7 +304,7 @@ router.post('/create-order', auth, [
     });
 
   } catch (error) {
-    console.error('Create PayPal order error:', error);
+    console.error('❌ Create PayPal order error:', error);
     console.error('Error details:', {
       message: error.message,
       stack: error.stack,
@@ -773,6 +804,24 @@ router.get('/debug-config', adminAuth, async (req, res) => {
       message: 'Failed to get debug configuration'
     });
   }
+});
+
+// @route   GET /api/payments/env-check
+// @desc    Check environment variables (for debugging)
+// @access  Public
+router.get('/env-check', (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      NODE_ENV: process.env.NODE_ENV,
+      hasPayPalClientId: !!process.env.PAYPAL_CLIENT_ID,
+      hasPayPalClientSecret: !!process.env.PAYPAL_CLIENT_SECRET,
+      hasFrontendUrl: !!process.env.FRONTEND_URL,
+      frontendUrl: process.env.FRONTEND_URL,
+      clientIdLength: process.env.PAYPAL_CLIENT_ID ? process.env.PAYPAL_CLIENT_ID.length : 0,
+      clientSecretLength: process.env.PAYPAL_CLIENT_SECRET ? process.env.PAYPAL_CLIENT_SECRET.length : 0
+    }
+  });
 });
 
 // @route   POST /api/payments/webhook
