@@ -5,7 +5,7 @@ const paymentSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
-  },
+  }, 
   game: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Game',
