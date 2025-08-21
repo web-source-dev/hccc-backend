@@ -829,8 +829,6 @@ router.post('/forgot-password', [
         <div style="text-align: center; margin: 24px 0;">
           <a href="${resetUrl}" style="background-color: #38a169; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">Reset Password</a>
         </div>
-        <p>If the button doesn't work, copy and paste this link into your browser:</p>
-        <p style="word-break: break-all; color: #3182ce;">${resetUrl}</p>
         <p><strong>This link will expire in 10 minutes.</strong></p>
         <p>If you didn't request this password reset, please ignore this email.</p>
         <hr style="margin: 24px 0;"/>
