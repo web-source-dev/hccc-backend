@@ -5,6 +5,8 @@ const User = require('../models/User');
 const { auth, adminAuth, cashierAuth, locationSpecificAuth } = require('../middleware/auth');
 const TokenBalance = require('../models/TokenBalance');
 const Payment = require('../models/Payment');
+const { sendEmail } = require('../utils/email');
+const crypto = require('crypto');
 
 const router = express.Router();
 
@@ -761,6 +763,189 @@ router.patch('/:userId/block', adminAuth, [
     res.status(500).json({
       success: false,
       message: 'Server error while updating user status'
+    });
+  }
+});
+
+// @route   POST /api/auth/forgot-password
+// @desc    Send reset password email
+// @access  Public
+router.post('/forgot-password', [
+  body('email')
+    .isEmail()
+    .withMessage('Please enter a valid email')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { email } = req.body;
+
+    console.log('Email:', email);
+
+    // Find user by email
+    const user = await User.findOne({ email: email.toLowerCase() });
+
+    console.log('User:', user);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'No user found with that email address'
+      });
+    }
+
+    // Check if user is active
+    if (!user.isActive) {
+      return res.status(400).json({
+        success: false,
+        message: 'Account is deactivated'
+      });
+    }
+
+    // Generate reset token
+    const resetToken = user.getResetPasswordToken();
+    await user.save({ validateBeforeSave: false });
+
+    // Create reset URL
+    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+
+    // Email content
+    const subject = 'Password Reset Request - HCCC Game Room';
+    const html = `
+      <div style="font-family: Arial, sans-serif; background: #f9f9f9; padding: 24px; border-radius: 8px; border: 1px solid #e2e8f0; max-width: 520px; margin: auto;">
+        <div style="text-align: center; margin-bottom: 18px;">
+          <h2 style="color: #1e293b; margin: 0;">HCCC Game Room - Password Reset</h2>
+        </div>
+        <p>Hello ${user.firstname} ${user.lastname},</p>
+        <p>You requested a password reset for your HCCC Game Room account.</p>
+        <p>Click the button below to reset your password:</p>
+        <div style="text-align: center; margin: 24px 0;">
+          <a href="${resetUrl}" style="background-color: #38a169; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">Reset Password</a>
+        </div>
+        <p>If the button doesn't work, copy and paste this link into your browser:</p>
+        <p style="word-break: break-all; color: #3182ce;">${resetUrl}</p>
+        <p><strong>This link will expire in 10 minutes.</strong></p>
+        <p>If you didn't request this password reset, please ignore this email.</p>
+        <hr style="margin: 24px 0;"/>
+        <p style="font-size: 13px; color: #718096;">This is an automated email from HCCC Game Room.</p>
+      </div>
+    `;
+
+    const text = `Hello ${user.firstname} ${user.lastname},\n\nYou requested a password reset for your HCCC Game Room account.\n\nClick the link below to reset your password:\n${resetUrl}\n\nThis link will expire in 10 minutes.\n\nIf you didn't request this password reset, please ignore this email.\n\nBest regards,\nHCCC Game Room Team`;
+
+    // Send email
+    await sendEmail({
+      to: user.email,
+      subject,
+      html,
+      text
+    });
+
+    res.json({
+      success: true,
+      message: 'Password reset email sent successfully'
+    });
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    
+    // Reset user fields if email fails
+    if (error.message.includes('email')) {
+      user.resetPasswordToken = undefined;
+      user.resetPasswordExpire = undefined;
+      await user.save({ validateBeforeSave: false });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send password reset email'
+    });
+  }
+});
+
+// @route   POST /api/auth/reset-password
+// @desc    Reset password with token
+// @access  Public
+router.post('/reset-password', [
+  body('token')
+    .notEmpty()
+    .withMessage('Reset token is required'),
+  body('password')
+    .isLength({ min: 6 })
+    .withMessage('Password must be at least 6 characters long')
+    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
+    .withMessage('Password must contain at least one uppercase letter, one lowercase letter, and one number')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { token, password } = req.body;
+
+    // Hash the token to compare with stored hash
+    const resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(token)
+      .digest('hex');
+
+    // Find user with valid token and not expired
+    const user = await User.findOne({
+      resetPasswordToken,
+      resetPasswordExpire: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired reset token'
+      });
+    }
+
+    // Set new password
+    user.password = password;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+    await user.save();
+
+    // Generate new JWT token
+    const newToken = generateToken(user._id);
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully',
+      data: {
+        user: {
+          id: user._id,
+          _id: user._id,
+          firstname: user.firstname,
+          lastname: user.lastname,
+          email: user.email,
+          role: user.role,
+          createdAt: user.createdAt,
+          lastLogin: user.lastLogin
+        },
+        token: newToken
+      }
+    });
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error during password reset'
     });
   }
 });
