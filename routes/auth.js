@@ -513,6 +513,108 @@ router.post('/cashier/tokens/adjust', cashierAuth, async (req, res) => {
   }
 });
 
+// Get all token balances for admin (bulk endpoint)
+router.get('/admin/tokens', adminAuth, async (req, res) => {
+  try {
+    const { page = 1, limit = 15, search = '', location = '', game = '' } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    // Build user filter
+    let userFilter = {};
+    if (search) {
+      userFilter = {
+        $or: [
+          { firstname: { $regex: search, $options: 'i' } },
+          { lastname: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } }
+        ]
+      };
+    }
+    
+    // Get users with pagination
+    const users = await User.find(userFilter)
+      .select('_id firstname lastname email')
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort({ firstname: 1, lastname: 1 });
+    
+    const totalUsers = await User.countDocuments(userFilter);
+    
+    // Build token balance filter
+    let balanceFilter = {};
+    if (location) {
+      balanceFilter.location = location;
+    }
+    if (game) {
+      balanceFilter.game = game;
+    }
+    
+    // Get all token balances for the users
+    const balances = await TokenBalance.find({
+      ...balanceFilter,
+      user: { $in: users.map(u => u._id) }
+    })
+      .populate('game', 'name')
+      .populate('user', 'firstname lastname email')
+      .sort({ 'user.firstname': 1, 'user.lastname': 1, game: 1, location: 1 });
+    
+    // Get pending token additions from scheduled payments
+    const Payment = require('../models/Payment');
+    const pendingPayments = await Payment.find({
+      user: { $in: users.map(u => u._id) },
+      status: 'succeeded',
+      tokensScheduledFor: { $exists: true, $ne: null },
+      tokensAdded: false,
+      ...(location && { location }),
+      ...(game && { game })
+    }).populate('game', 'name').populate('user', 'firstname lastname email');
+
+    // Group pending tokens by user, game and location
+    const pendingTokens = {};
+    pendingPayments.forEach(payment => {
+      const key = `${payment.user._id}-${payment.game._id}-${payment.location}`;
+      if (!pendingTokens[key]) {
+        pendingTokens[key] = {
+          user: payment.user,
+          game: payment.game,
+          location: payment.location,
+          tokens: 0,
+          scheduledFor: payment.tokensScheduledFor
+        };
+      }
+      pendingTokens[key].tokens += payment.tokenPackage.tokens;
+    });
+
+    // Add pending token info to balances
+    const balancesWithPending = balances.map(balance => {
+      const key = `${balance.user._id}-${balance.game._id}-${balance.location}`;
+      const pending = pendingTokens[key];
+      return {
+        ...balance.toObject(),
+        pendingTokens: pending ? pending.tokens : 0,
+        tokensScheduledFor: pending ? pending.scheduledFor : null
+      };
+    });
+
+    res.json({ 
+      success: true, 
+      data: { 
+        balances: balancesWithPending,
+        pendingTokens: Object.values(pendingTokens),
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: totalUsers,
+          pages: Math.ceil(totalUsers / parseInt(limit))
+        }
+      } 
+    });
+  } catch (error) {
+    console.error('Get admin token balances error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch token balances' });
+  }
+});
+
 // Get all token balances for a user (admin only)
 router.get('/:userId/tokens', adminAuth, async (req, res) => {
   try {
