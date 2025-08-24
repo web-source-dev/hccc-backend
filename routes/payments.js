@@ -684,15 +684,82 @@ router.get('/by-order/:orderId', auth, async (req, res) => {
 // @access  Private (Admin)
 router.get('/admin/all', adminAuth, async (req, res) => {
   try {
-    const { limit = 50, page = 1, status } = req.query;
+    const { limit = 50, page = 1, status, search, game, location, tokens, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
 
     const filter = {};
-    if (status) filter.status = status;
+    
+    // Status filter
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+    
+    // Game filter
+    if (game && game !== 'all') {
+      filter.game = game;
+    }
+    
+    // Location filter
+    if (location && location !== 'all') {
+      filter.location = location;
+    }
+    
+    // Tokens filter
+    if (tokens && tokens !== 'all') {
+      if (tokens === '0-100') {
+        filter['tokenPackage.tokens'] = { $lte: 100 };
+      } else if (tokens === '100-500') {
+        filter['tokenPackage.tokens'] = { $gt: 100, $lte: 500 };
+      } else if (tokens === '500-1000') {
+        filter['tokenPackage.tokens'] = { $gt: 500, $lte: 1000 };
+      } else if (tokens === '1000+') {
+        filter['tokenPackage.tokens'] = { $gt: 1000 };
+      }
+    }
+    
+    // Search filter (search in user name, email, and game name)
+    if (search) {
+      // First, find users that match the search
+      const User = require('../models/User');
+      const matchingUsers = await User.find({
+        $or: [
+          { firstname: { $regex: search, $options: 'i' } },
+          { lastname: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } }
+        ]
+      }).select('_id');
+      
+      const userIds = matchingUsers.map(u => u._id);
+      
+      // Find games that match the search
+      const Game = require('../models/Game');
+      const matchingGames = await Game.find({
+        name: { $regex: search, $options: 'i' }
+      }).select('_id');
+      
+      const gameIds = matchingGames.map(g => g._id);
+      
+      // Add to filter
+      if (userIds.length > 0 || gameIds.length > 0) {
+        filter.$or = [];
+        if (userIds.length > 0) {
+          filter.$or.push({ user: { $in: userIds } });
+        }
+        if (gameIds.length > 0) {
+          filter.$or.push({ game: { $in: gameIds } });
+        }
+      }
+    }
+    
+    // Build sort object
+    const sort = {};
+    if (sortBy) {
+      sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    }
 
     const payments = await Payment.find(filter)
       .populate('user', 'firstname lastname email')
       .populate('game', 'name image')
-      .sort({ createdAt: -1 })
+      .sort(sort)
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit));
 

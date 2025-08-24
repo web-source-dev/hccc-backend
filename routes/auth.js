@@ -213,9 +213,11 @@ router.get('/me', auth, async (req, res) => {
 // @access  Private (Admin)
 router.get('/users', adminAuth, async (req, res) => {
   try {
-    const { limit = 50, page = 1, search } = req.query;
+    const { limit = 50, page = 1, search, role, status, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
     
     const filter = {};
+    
+    // Search filter
     if (search) {
       filter.$or = [
         { firstname: { $regex: search, $options: 'i' } },
@@ -224,9 +226,29 @@ router.get('/users', adminAuth, async (req, res) => {
       ];
     }
     
+    // Role filter
+    if (role && role !== 'all') {
+      filter.role = role;
+    }
+    
+    // Status filter
+    if (status && status !== 'all') {
+      if (status === 'active') {
+        filter.isActive = { $ne: false };
+      } else if (status === 'inactive') {
+        filter.isActive = false;
+      }
+    }
+    
+    // Build sort object
+    const sort = {};
+    if (sortBy) {
+      sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
+    }
+    
     const users = await User.find(filter)
       .select('-password')
-      .sort({ createdAt: -1 })
+      .sort(sort)
       .limit(parseInt(limit))
       .skip((parseInt(page) - 1) * parseInt(limit));
     
@@ -516,7 +538,7 @@ router.post('/cashier/tokens/adjust', cashierAuth, async (req, res) => {
 // Get all token balances for admin (bulk endpoint)
 router.get('/admin/tokens', adminAuth, async (req, res) => {
   try {
-    const { page = 1, limit = 15, search = '', location = '', game = '' } = req.query;
+    const { page = 1, limit = 15, search = '', location = '', game = '', sortBy = 'user', sortOrder = 'asc' } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
     // Build user filter
@@ -531,12 +553,19 @@ router.get('/admin/tokens', adminAuth, async (req, res) => {
       };
     }
     
+    // Build sort object for users
+    const userSort = {};
+    if (sortBy === 'user') {
+      userSort.firstname = sortOrder === 'asc' ? 1 : -1;
+      userSort.lastname = sortOrder === 'asc' ? 1 : -1;
+    }
+    
     // Get users with pagination
     const users = await User.find(userFilter)
       .select('_id firstname lastname email')
       .skip(skip)
       .limit(parseInt(limit))
-      .sort({ firstname: 1, lastname: 1 });
+      .sort(userSort);
     
     const totalUsers = await User.countDocuments(userFilter);
     
@@ -549,6 +578,21 @@ router.get('/admin/tokens', adminAuth, async (req, res) => {
       balanceFilter.game = game;
     }
     
+    // Build sort object for token balances
+    const balanceSort = {};
+    if (sortBy === 'user') {
+      balanceSort['user.firstname'] = sortOrder === 'asc' ? 1 : -1;
+      balanceSort['user.lastname'] = sortOrder === 'asc' ? 1 : -1;
+    } else if (sortBy === 'game') {
+      balanceSort['game.name'] = sortOrder === 'asc' ? 1 : -1;
+    } else if (sortBy === 'location') {
+      balanceSort.location = sortOrder === 'asc' ? 1 : -1;
+    } else if (sortBy === 'tokens') {
+      balanceSort.tokens = sortOrder === 'asc' ? 1 : -1;
+    } else if (sortBy === 'updatedAt') {
+      balanceSort.updatedAt = sortOrder === 'asc' ? 1 : -1;
+    }
+    
     // Get all token balances for the users
     const balances = await TokenBalance.find({
       ...balanceFilter,
@@ -556,7 +600,7 @@ router.get('/admin/tokens', adminAuth, async (req, res) => {
     })
       .populate('game', 'name')
       .populate('user', 'firstname lastname email')
-      .sort({ 'user.firstname': 1, 'user.lastname': 1, game: 1, location: 1 });
+      .sort(balanceSort);
     
     // Get pending token additions from scheduled payments
     const Payment = require('../models/Payment');
