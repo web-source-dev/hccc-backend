@@ -6,6 +6,7 @@ const eventSchema = new mongoose.Schema({
   date: { type: Date, required: true },
   location: { type: String },
   image: { type: String },
+  showEvent: { type: Boolean, default: false },
 }, {
   timestamps: true // adds createdAt and updatedAt
 });

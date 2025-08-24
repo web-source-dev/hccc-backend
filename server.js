@@ -10,6 +10,8 @@ const authRoutes = require('./routes/auth');
 const gamesRoutes = require('./routes/games');
 const paymentsRoutes = require('./routes/payments');
 const eventsRoutes = require('./routes/events');
+const winnersRoutes = require('./routes/winners');
+const uploadRoutes = require('./routes/upload');
 const cronService = require('./services/cronService');
 
 const app = express();
@@ -85,6 +87,8 @@ app.get('/', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/games', gamesRoutes);
 app.use('/api/events', eventsRoutes);
+app.use('/api/winners', winnersRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // Register all other payment routes (webhook already handled above)
 app.use('/api/payments', paymentsRoutes);

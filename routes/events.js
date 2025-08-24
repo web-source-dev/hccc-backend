@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const Event = require('../models/Event');
+const { adminAuth } = require('../middleware/auth');
 
-// Get all events
-router.get('/', async (req, res) => {
+// Get all events (admin only)
+router.get('/', adminAuth, async (req, res) => {
   try {
     const events = await Event.find().sort({ date: -1 });
     res.json(events);
@@ -12,8 +13,18 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Get single event by ID
-router.get('/:id', async (req, res) => {
+// Get public events (visible ones)
+router.get('/public', async (req, res) => {
+  try {
+    const events = await Event.find({ showEvent: true }).sort({ date: -1 });
+    res.json(events);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get single event by ID (admin only)
+router.get('/:id', adminAuth, async (req, res) => {
   try {
     const event = await Event.findById(req.params.id);
     if (!event) return res.status(404).json({ error: 'Event not found' });
@@ -23,11 +34,18 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// Create event
-router.post('/', async (req, res) => {
+// Create event (admin only)
+router.post('/', adminAuth, async (req, res) => {
   try {
-    const { title, description, date, location, image } = req.body;
-    const event = new Event({ title, description, date, location, image });
+    const { title, description, date, location, image, showEvent } = req.body;
+    const event = new Event({ 
+      title, 
+      description, 
+      date, 
+      location, 
+      image, 
+      showEvent: showEvent || false 
+    });
     await event.save();
     res.status(201).json(event);
   } catch (err) {
@@ -35,13 +53,13 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Update event
-router.put('/:id', async (req, res) => {
+// Update event (admin only)
+router.put('/:id', adminAuth, async (req, res) => {
   try {
-    const { title, description, date, location, image } = req.body;
+    const { title, description, date, location, image, showEvent } = req.body;
     const event = await Event.findByIdAndUpdate(
       req.params.id,
-      { title, description, date, location, image },
+      { title, description, date, location, image, showEvent },
       { new: true, runValidators: true }
     );
     if (!event) return res.status(404).json({ error: 'Event not found' });
@@ -51,8 +69,8 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// Delete event
-router.delete('/:id', async (req, res) => {
+// Delete event (admin only)
+router.delete('/:id', adminAuth, async (req, res) => {
   try {
     const event = await Event.findByIdAndDelete(req.params.id);
     if (!event) return res.status(404).json({ error: 'Event not found' });
